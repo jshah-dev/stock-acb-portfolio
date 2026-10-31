@@ -159,6 +159,23 @@ ENV/
 env.bak/
 venv.bak/
 
+# Local app data, databases & runtime state
+.DS_Store
+*.db
+*.db-wal
+*.db-shm
+.portfoliotracker/
+.stockacbportfoliotracker/
+test_data/
+
+# Inno Setup output & Windows executables
+installer_output/
+Output/
+*.exe
+
+# IDE & Editor
+.vscode/
+
 # Spyder project settings
 .spyderproject
 .spyproject
@@ -218,3 +235,5 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+
