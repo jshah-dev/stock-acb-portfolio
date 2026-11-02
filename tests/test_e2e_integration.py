@@ -21,9 +21,11 @@ from portfolio_tracker.parser import parse_tradebook
 
 def test_full_portfolio_tracker_lifecycle_e2e(tmp_path, monkeypatch):
     """Full lifecycle test simulating the entire user journey."""
-    real_file = Path("test_data/tradebook-FT8594-EQ.xlsx")
-    if not real_file.is_file():
+    sample_files = list(Path("test_data").glob("*.xlsx")) if Path("test_data").is_dir() else []
+    if not sample_files:
         pytest.skip("Real Zerodha tradebook test file not found in test_data/")
+
+    real_file = sample_files[0]
 
     fake_config = tmp_path / "config.json"
     monkeypatch.setattr("portfolio_tracker.config.get_config_path", lambda: fake_config)

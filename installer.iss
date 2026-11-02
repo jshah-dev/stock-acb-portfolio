@@ -4,7 +4,7 @@
 #define MyAppName "Stock ACB Portfolio Tracker"
 #define MyAppVersion "1.0.0"
 #define MyAppPublisher "JShah"
-#define MyAppURL "https://github.com/jshah-dev/house-money-portfolio"
+#define MyAppURL "https://github.com/jshah-dev/stock-acb-portfolio"
 #define MyAppSupportURL "https://github.com/jshah-dev"
 #define MyAppExeName "StockACBPortfolioTracker.exe"
 

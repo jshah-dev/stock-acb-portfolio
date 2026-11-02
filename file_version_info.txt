@@ -27,7 +27,7 @@ VSVersionInfo(
             StringStruct('OriginalFilename', 'StockACBPortfolioTracker.exe'),
             StringStruct('ProductName', 'Stock ACB Portfolio Tracker'),
             StringStruct('ProductVersion', '1.0.0.0'),
-            StringStruct('Comments', 'https://github.com/jshah-dev/house-money-portfolio')
+            StringStruct('Comments', 'https://github.com/jshah-dev/stock-acb-portfolio')
           ]
         )
       ]

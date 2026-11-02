@@ -161,11 +161,12 @@ def test_parse_tradebook_without_trade_ids_fallback_hash(db_conn, tmp_path):
 
 
 def test_real_zerodha_tradebook_file(db_conn):
-    """Test ingestion with real Zerodha Excel export if present."""
-    real_file = Path("test_data/tradebook-FT8594-EQ.xlsx")
-    if not real_file.is_file():
+    """Test ingestion with real Zerodha Excel export if present in test_data/."""
+    sample_files = list(Path("test_data").glob("*.xlsx")) if Path("test_data").is_dir() else []
+    if not sample_files:
         pytest.skip("Real Zerodha file not found")
 
+    real_file = sample_files[0]
     assert detect_header_row(real_file) == 14
 
     inserted, dupes, total = parse_tradebook(real_file, "ZERODHA_SELF", db_conn)
