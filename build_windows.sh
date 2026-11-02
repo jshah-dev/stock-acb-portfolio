@@ -1,14 +1,13 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# build_windows.sh - Cross-Platform Windows Executable Generator
+# build_windows.sh - Windows Executable Generator (WSL & GitHub Actions)
 # ==============================================================================
-# Generates a standalone Windows .exe / installer from macOS, Linux, or WSL
-# without requiring the end user to clone the code or install Python.
+# Generates a standalone Windows .exe / installer without requiring the end
+# user to clone code or install Python.
 #
 # Supported Environments:
-#   1. WSL (Windows Subsystem for Linux) -> Uses native Windows interop (cmd.exe)
-#   2. macOS / Linux with Docker        -> Uses containerized Wine + Python 3.11
-#   3. GitHub Actions CI/CD             -> Automated cloud build on windows-latest
+#   1. WSL (Windows Subsystem for Linux) -> Native Windows interop via cmd.exe
+#   2. GitHub Actions CI/CD             -> Automated cloud build on windows-latest
 # ==============================================================================
 
 set -e
@@ -83,7 +82,7 @@ if [ "$IS_WSL" = true ]; then
         echo -e "\n${GREEN}${BOLD}======================================================================${NC}"
         echo -e "${GREEN}${BOLD}[SUCCESS] Windows Setup Wizard Generated Successfully!${NC}"
         echo -e "${GREEN}Installer File: installer_output\\StockACBPortfolioTrackerSetup.exe${NC}"
-        echo -e "You can distribute this single .exe directly to end users. Zero setup required!"
+        echo -e "Distribute this single .exe directly to end users. Zero setup required!"
         echo -e "${GREEN}${BOLD}======================================================================${NC}"
     else
         echo -e "\n${YELLOW}[NOTE] Inno Setup 6 (ISCC.exe) not found on Windows host.${NC}"
@@ -95,88 +94,19 @@ if [ "$IS_WSL" = true ]; then
 fi
 
 # ------------------------------------------------------------------------------
-# CASE 2: Running on macOS or Linux (using Docker container with Wine)
+# CASE 2: Running on macOS or native Linux
 # ------------------------------------------------------------------------------
 echo -e "${GREEN}[INFO] Detected host OS: $(uname -s) ($(uname -m))${NC}"
+echo -e "${YELLOW}${BOLD}[NOTICE] PySide6 (Qt6) relies on native Windows C++ DLLs and cannot be cross-compiled locally on macOS/Linux.${NC}"
+echo -e "Instead, use the included GitHub Actions workflow to build the standalone .exe on Microsoft's native Windows runners.\n"
 
-# Check Docker availability
-DOCKER_AVAILABLE=false
-if command -v docker >/dev/null 2>&1; then
-    if docker info >/dev/null 2>&1; then
-        DOCKER_AVAILABLE=true
-    fi
-fi
-
-if [ "$DOCKER_AVAILABLE" = true ]; then
-    echo -e "${GREEN}[INFO] Docker daemon is running.${NC}"
-    echo -e "[INFO] Building Windows .exe using containerized Wine + Python 3.11 environment (tobix/pywine)..."
-    
-    # Clean previous build artifacts
-    rm -rf build dist installer_output 2>/dev/null || true
-    mkdir -p dist
-
-    echo -e "${BLUE}[STEP 1/2] Installing Windows dependencies and packaging with PyInstaller...${NC}"
-    docker run --rm \
-        -v "$PWD":/src \
-        -w /src \
-        tobix/pywine:3.11 \
-        sh -c "
-            wine pip install --upgrade pip && \
-            wine pip install -r requirements.txt && \
-            wine pyinstaller --noconfirm --onedir --windowed \
-                --name 'StockACBPortfolioTracker' \
-                --add-data 'portfolio_tracker/ui;portfolio_tracker/ui' \
-                --hidden-import 'openpyxl' \
-                --hidden-import 'pandas' \
-                --hidden-import 'plotly' \
-                --hidden-import 'PySide6.QtWebEngineWidgets' \
-                --hidden-import 'PySide6.QtWebEngineCore' \
-                portfolio_tracker/main.py && \
-            wine pyinstaller --noconfirm --onefile --windowed \
-                --name 'StockACBPortfolioTrackerPortable' \
-                --add-data 'portfolio_tracker/ui;portfolio_tracker/ui' \
-                --hidden-import 'openpyxl' \
-                --hidden-import 'pandas' \
-                --hidden-import 'plotly' \
-                --hidden-import 'PySide6.QtWebEngineWidgets' \
-                --hidden-import 'PySide6.QtWebEngineCore' \
-                portfolio_tracker/main.py
-        "
-
-    # Fix file permissions from Docker
-    if [ "$(id -u)" != "0" ]; then
-        sudo chown -R "$(id -u):$(id -g)" dist/ build/ 2>/dev/null || true
-    fi
-
-    echo -e "\n${GREEN}${BOLD}======================================================================${NC}"
-    echo -e "${GREEN}${BOLD}[SUCCESS] Windows Executables Generated Successfully via Docker!${NC}"
-    echo -e "1. Standalone Portable Executable (Zero install required):"
-    echo -e "   -> ${BOLD}dist/StockACBPortfolioTrackerPortable.exe${NC}"
-    echo -e "2. Full Application Bundle:"
-    echo -e "   -> ${BOLD}dist/StockACBPortfolioTracker/StockACBPortfolioTracker.exe${NC}"
-    echo -e "\nDistribute ${BOLD}StockACBPortfolioTrackerPortable.exe${NC} directly to Windows users."
-    echo -e "They can double-click it directly without cloning code or installing Python!"
-    echo -e "${GREEN}${BOLD}======================================================================${NC}"
-    exit 0
-fi
-
-# ------------------------------------------------------------------------------
-# CASE 3: Docker not running or not installed on macOS / Linux
-# ------------------------------------------------------------------------------
-echo -e "${YELLOW}${BOLD}[NOTICE] Native Windows cross-compilation requires running Windows Python.${NC}"
-echo -e "To generate the Windows .exe directly from macOS or Linux without Windows, you have two options:\n"
-
-echo -e "${BOLD}Option A: Start Docker Desktop (Local Build)${NC}"
-echo -e "  1. Start Docker Desktop on your machine."
-echo -e "  2. Re-run: ${GREEN}./build_windows.sh${NC}"
-echo -e "  -> This will automatically build ${BOLD}dist/StockACBPortfolioTrackerPortable.exe${NC} via Wine.\n"
-
-echo -e "${BOLD}Option B: GitHub Actions Cloud Build (Zero Setup, Recommended)${NC}"
-echo -e "  A pre-configured GitHub Actions workflow (.github/workflows/build-windows.yml) is ready."
-echo -e "  Whenever you push a tag or trigger it from the GitHub website:"
-echo -e "  1. Push code to GitHub:  ${GREEN}git push origin main${NC}"
-echo -e "  2. Go to your GitHub repo -> ${BOLD}Actions${NC} tab -> ${BOLD}Build Windows Executable${NC} -> ${BOLD}Run workflow${NC}."
-echo -e "  3. Microsoft's native Windows runner builds the setup wizard (.exe) in ~2 minutes."
-echo -e "  4. Download the ready-to-run ${BOLD}StockACBPortfolioTrackerSetup.exe${NC} directly from GitHub!"
+echo -e "${BOLD}How to generate the Windows .exe via GitHub Actions (Zero Setup):${NC}"
+echo -e "  1. Push your code to GitHub:  ${GREEN}git push origin main${NC}"
+echo -e "  2. Go to your GitHub repository -> ${BOLD}Actions${NC} tab."
+echo -e "  3. Select ${BOLD}Build Windows Application${NC} and click ${BOLD}Run workflow${NC}."
+echo -e "  4. In ~3 minutes, download the pre-compiled ${BOLD}StockACBPortfolioTracker-Windows-Setup${NC} artifact."
+echo -e "     -> Inside is ${BOLD}StockACBPortfolioTrackerSetup.exe${NC} ready to distribute!"
+echo -e "\n${BOLD}For official releases:${NC}"
+echo -e "  Tag a commit: ${GREEN}git tag v1.0.0 && git push origin v1.0.0${NC}"
+echo -e "  -> GitHub will automatically build and publish the installer to your repository Releases page."
 echo -e "${BLUE}======================================================================${NC}"
-

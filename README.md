@@ -156,37 +156,31 @@ Companies periodically undergo rebranding, mergers, demergers, or ticker changes
 
 ## Generating the Windows Executable (.exe) & Installer
 
-End users on Windows **never need to clone the code, open a command prompt, or install Python**. You can generate a ready-to-install `.exe` using any of the three methods below:
+End users on Windows **never need to clone code, open a command prompt, or install Python**. You can generate a ready-to-install setup wizard (`StockACBPortfolioTrackerSetup.exe`) using either of the methods below:
 
-### Method 1: Automated Cross-Platform Shell Script (`build_windows.sh`)
-A unified shell script [`build_windows.sh`](file:///Users/jigarshah14/Desktop/Jigar/jshah-dev/house-money-portfolio/build_windows.sh) is provided to build the Windows `.exe` from your Unix workstation:
+### Method 1: GitHub Actions Cloud Build (Recommended — Zero Local Setup)
+Build the official Windows setup wizard directly in Microsoft's native Windows cloud environment with zero local toolchain:
+
+1. Push your code to GitHub:
+   ```bash
+   git push origin main
+   ```
+2. Navigate to your repository on GitHub $\to$ **Actions** tab.
+3. Select **Build Windows Application** $\to$ click **Run workflow**.
+4. GitHub Actions spins up a native `windows-latest` VM, runs the test suite, builds with PyInstaller, and compiles Inno Setup.
+5. In ~3 minutes, download the pre-compiled **`StockACBPortfolioTracker-Windows-Setup`** artifact containing **`StockACBPortfolioTrackerSetup.exe`**.
+6. *(Optional)* Tagging a release (e.g. `git tag v1.0.0 && git push origin v1.0.0`) automatically publishes a GitHub Release with the `.exe` attached as a direct download link.
+
+---
+
+### Method 2: From WSL (Windows Subsystem for Linux)
+If developing on Windows using WSL, you can compile the `.exe` directly from the WSL terminal:
 
 ```bash
 chmod +x build_windows.sh
 ./build_windows.sh
 ```
-
-- **Running in WSL (Windows Subsystem for Linux):** Automatically bridges to the Windows host via `cmd.exe`, runs PyInstaller, and compiles the Inno Setup wizard. Outputs `installer_output/StockACBPortfolioTrackerSetup.exe`.
-- **Running on macOS or Linux (with Docker):** Automatically mounts the repository into a containerized Wine + Python 3.11 environment (`tobix/pywine`), cross-compiling both:
-  - `dist/StockACBPortfolioTrackerPortable.exe` (Single standalone `.exe`, zero install required)
-  - `dist/StockACBPortfolioTracker/StockACBPortfolioTracker.exe` (Full application folder)
-
----
-
-### Method 2: GitHub Actions Cloud Build (Recommended — Zero Local Setup)
-You can build the official Windows `.exe` directly in Microsoft's Windows Server cloud with zero local setup:
-
-1. Push your repository to GitHub:
-   ```bash
-   git push origin main
-   ```
-2. In your GitHub repository, navigate to the **Actions** tab.
-3. Select the **Build Windows Application** workflow and click **Run workflow**.
-4. GitHub Actions spins up a native `windows-latest` virtual machine, installs Python 3.11, builds with PyInstaller, and compiles Inno Setup.
-5. In ~2 minutes, download the pre-compiled `.exe` artifacts:
-   - **`StockACBPortfolioTracker-Setup-Wizard`** (`StockACBPortfolioTrackerSetup.exe` — recommended for end users)
-   - **`StockACBPortfolioTracker-Portable-Exe`** (`StockACBPortfolioTrackerPortable.exe` — standalone single file)
-6. *(Optional)* Tagging a release (e.g., `git tag v1.0.0 && git push origin v1.0.0`) automatically publishes a GitHub Release with the `.exe` files attached as direct download links.
+The script bridges to the host Windows Python and Inno Setup compiler via `cmd.exe`, producing `installer_output/StockACBPortfolioTrackerSetup.exe`.
 
 ---
 
@@ -208,12 +202,11 @@ This produces `dist\StockACBPortfolioTracker\StockACBPortfolioTracker.exe`.
 
 ## How the Windows User Installs & Runs
 
-Simply send the generated `StockACBPortfolioTrackerSetup.exe` (or direct download link) to the end user:
+Simply send the generated `StockACBPortfolioTrackerSetup.exe` (or GitHub Release link) to the end user:
 1. User double-clicks `StockACBPortfolioTrackerSetup.exe`.
-2. Follows standard modern setup wizard (installs to `%LocalAppData%\Programs\...` with **zero admin rights / UAC elevation needed**).
-3. The app is launched immediately and adds a **Desktop Shortcut** and **Start Menu entry**.
-4. A registered uninstaller is created in Windows *Add or Remove Programs* that cleanly uninstalls binaries while safely keeping user portfolio data intact.
-*(Alternatively, send `StockACBPortfolioTrackerPortable.exe` for a zero-installation portable experience).*
+2. Standard modern setup wizard installs into `%LocalAppData%\Programs\...` with **zero admin rights / UAC elevation needed**.
+3. It launches immediately and adds a **Desktop Shortcut** and **Start Menu entry**.
+4. A registered uninstaller is created in Windows *Installed Apps* / *Add or Remove Programs* that cleanly removes binaries while safely keeping user portfolio data intact.
 
 ---
 
