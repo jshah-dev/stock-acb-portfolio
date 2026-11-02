@@ -16,6 +16,7 @@ if exist "dist\StockACBPortfolioTracker" rmdir /s /q "dist\StockACBPortfolioTrac
 REM Run PyInstaller one-directory packaging
 pyinstaller --noconfirm --onedir --windowed ^
     --name "StockACBPortfolioTracker" ^
+    --version-file "file_version_info.txt" ^
     --collect-submodules "portfolio_tracker" ^
     --collect-data "PySide6" ^
     --hidden-import "PySide6.QtCharts" ^

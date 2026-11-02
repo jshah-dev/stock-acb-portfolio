@@ -4,6 +4,8 @@
 #define MyAppName "Stock ACB Portfolio Tracker"
 #define MyAppVersion "1.0.0"
 #define MyAppPublisher "JShah"
+#define MyAppURL "https://github.com/jshah-dev/house-money-portfolio"
+#define MyAppSupportURL "https://github.com/jshah-dev"
 #define MyAppExeName "StockACBPortfolioTracker.exe"
 
 [Setup]
@@ -11,6 +13,9 @@ AppId={{C61F188D-4F15-4D64-884E-5D9E5E5862F4}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
+AppPublisherURL={#MyAppURL}
+AppSupportURL={#MyAppSupportURL}
+AppUpdatesURL={#MyAppURL}
 DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 OutputDir=installer_output
@@ -20,6 +25,12 @@ SolidCompression=yes
 WizardStyle=modern
 PrivilegesRequired=lowest
 DisableProgramGroupPage=yes
+
+; Windows File Metadata
+VersionInfoCompany={#MyAppPublisher}
+VersionInfoDescription={#MyAppName} Setup
+VersionInfoVersion={#MyAppVersion}.0
+VersionInfoCopyright=Copyright (C) 2026 {#MyAppPublisher} ({#MyAppURL})
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
