@@ -8,12 +8,14 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QComboBox,
     QCompleter,
     QDialog,
     QHBoxLayout,
     QHeaderView,
     QLabel,
     QLineEdit,
+    QListView,
     QMessageBox,
     QPushButton,
     QTableWidget,
@@ -21,7 +23,12 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from portfolio_tracker.db import delete_transaction, get_all_symbols, get_recent_transactions
+from portfolio_tracker.db import (
+    delete_transaction,
+    get_accounts,
+    get_all_symbols,
+    get_recent_transactions,
+)
 from portfolio_tracker.ui.edit_trade_dialog import EditTradeDialog
 from portfolio_tracker.ui.styles import NumericTableWidgetItem, set_style_class
 
@@ -51,19 +58,46 @@ class TransactionHistoryDialog(QDialog):
         title = QLabel("All Trades")
         title.setStyleSheet("font-size: 16px; font-weight: 700; color: #0F172A;")
         top_layout.addWidget(title)
+
+        self.lbl_count = QLabel("")
+        self.lbl_count.setStyleSheet(
+            "background-color: #F1F5F9; border: 1px solid #CBD5E1; border-radius: 12px; "
+            "padding: 3px 10px; font-size: 12px; font-weight: 600; color: #475569;"
+        )
+        top_layout.addWidget(self.lbl_count)
+
         top_layout.addStretch()
+
+        # Account Filter Combobox
+        self.combo_account = QComboBox()
+        self.combo_account.setView(QListView())
+        self.combo_account.addItem("All Accounts (Consolidated)", None)
+        try:
+            accounts = get_accounts(self.db_conn)
+            for acc in accounts:
+                self.combo_account.addItem(f"{acc['user_name']} ({acc['account_id']})", acc["account_id"])
+        except Exception:
+            pass
+
+        if self.account_id:
+            idx = self.combo_account.findData(self.account_id)
+            if idx >= 0:
+                self.combo_account.setCurrentIndex(idx)
+
+        self.combo_account.currentIndexChanged.connect(lambda: self._filter_table())
+        top_layout.addWidget(self.combo_account)
 
         # Search Bar with Symbol Autocomplete
         self.txt_search = QLineEdit()
-        self.txt_search.setPlaceholderText("Search by symbol or account...")
-        self.txt_search.setFixedWidth(260)
+        self.txt_search.setPlaceholderText("Search symbol (e.g. AARTIDRUGS), trade ID, note...")
+        self.txt_search.setFixedWidth(280)
         symbols = get_all_symbols(self.db_conn)
         self.completer = QCompleter(symbols, self)
         self.completer.setCaseSensitivity(Qt.CaseInsensitive)
         self.completer.setFilterMode(Qt.MatchContains)
         self.completer.setCompletionMode(QCompleter.PopupCompletion)
         self.txt_search.setCompleter(self.completer)
-        self.txt_search.textChanged.connect(self._filter_table)
+        self.txt_search.textChanged.connect(lambda: self._filter_table())
         top_layout.addWidget(self.txt_search)
 
         self.btn_autofit = QPushButton("↔ Auto-Fit")
@@ -151,9 +185,9 @@ class TransactionHistoryDialog(QDialog):
         self.transaction_updated.emit()
 
     def _load_transactions(self):
-        """Fetch transactions from database and populate the table with numeric sorting."""
+        """Fetch all transactions from database and populate the table with numeric sorting."""
         self.table.setSortingEnabled(False)
-        txs = get_recent_transactions(self.db_conn, account_id=self.account_id, limit=300)
+        txs = get_recent_transactions(self.db_conn, account_id=None, limit=None)
         self.table.setRowCount(len(txs))
 
         for r_idx, t in enumerate(txs):
@@ -168,8 +202,9 @@ class TransactionHistoryDialog(QDialog):
             it_id.setFlags(it_id.flags() & ~Qt.ItemIsEditable)
             self.table.setItem(r_idx, 0, it_id)
 
-            # Account
+            # Account (Display Name + store account_id in UserRole for filtering)
             it_acc = NumericTableWidgetItem(str(t["user_name"]))
+            it_acc.setData(Qt.UserRole, str(t["account_id"]))
             it_acc.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
             it_acc.setFlags(it_acc.flags() & ~Qt.ItemIsEditable)
             self.table.setItem(r_idx, 1, it_acc)
@@ -222,15 +257,45 @@ class TransactionHistoryDialog(QDialog):
             self.table.setItem(r_idx, 7, it_notes)
 
         self.table.setSortingEnabled(True)
+        self._filter_table()
 
-    def _filter_table(self, query: str):
-        q = query.strip().lower()
-        for row in range(self.table.rowCount()):
-            symbol = self.table.item(row, 2).text().lower()
-            account = self.table.item(row, 1).text().lower()
+    def _filter_table(self):
+        query = self.txt_search.text().strip().lower()
+        selected_acc = self.combo_account.currentData() if hasattr(self, "combo_account") else self.account_id
+
+        visible_count = 0
+        total_count = self.table.rowCount()
+
+        for row in range(total_count):
+            sym = self.table.item(row, 2).text().lower()
+            acc_name = self.table.item(row, 1).text().lower()
+            acc_id = str(self.table.item(row, 1).data(Qt.UserRole) or "").lower()
             trade_id = self.table.item(row, 0).text().lower()
-            match = (q in symbol) or (q in account) or (q in trade_id)
+            notes = self.table.item(row, 7).text().lower()
+
+            acc_match = True
+            if selected_acc:
+                acc_match = (acc_id == str(selected_acc).lower())
+
+            text_match = True
+            if query:
+                text_match = (
+                    (query in sym)
+                    or (query in acc_name)
+                    or (query in acc_id)
+                    or (query in trade_id)
+                    or (query in notes)
+                )
+
+            match = acc_match and text_match
             self.table.setRowHidden(row, not match)
+            if match:
+                visible_count += 1
+
+        if visible_count == total_count:
+            self.lbl_count.setText(f"{total_count:,} trade(s)")
+        else:
+            self.lbl_count.setText(f"Showing {visible_count:,} of {total_count:,} trade(s)")
 
     def _on_delete_selected(self):
         selected_rows = self.table.selectionModel().selectedRows()

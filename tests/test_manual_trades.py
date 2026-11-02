@@ -99,6 +99,24 @@ def test_delete_single_transaction(db_conn):
     assert delete_transaction(db_conn, "NON_EXISTENT") is False
 
 
+def test_get_all_transactions_no_truncation(db_conn):
+    """Verify get_recent_transactions with limit=None returns all transactions without truncation."""
+    from portfolio_tracker.db import get_all_transactions
+    # Insert 150 transactions
+    for i in range(150):
+        insert_manual_transaction(
+            db_conn, "ZERODHA_SELF", f"SYM{i}", "BUY", 10, 100.0 + i, f"2024-01-01 00:00:{i%60:02d}"
+        )
+
+    # Calling with limit=None should return all 150
+    assert len(get_recent_transactions(db_conn, limit=None)) == 150
+    assert len(get_all_transactions(db_conn)) == 150
+
+    # Calling with limit=50 returns 50
+    assert len(get_recent_transactions(db_conn, limit=50)) == 50
+
+
+
 def test_get_and_update_transaction(db_conn):
     """Verify fetching and updating transaction details (e.g. for split/bonus corporate actions)."""
     trade_id = insert_manual_transaction(

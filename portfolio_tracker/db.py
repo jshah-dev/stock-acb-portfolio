@@ -521,9 +521,15 @@ def delete_transaction(conn: sqlite3.Connection, trade_id: str) -> bool:
 def get_recent_transactions(
     conn: sqlite3.Connection,
     account_id: Optional[str] = None,
-    limit: int = 100,
+    limit: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
-    """Retrieve recent transactions with account metadata for audit and review."""
+    """Retrieve transactions with account metadata for audit and review.
+    
+    Args:
+        conn: SQLite connection.
+        account_id: Optional account filter.
+        limit: Optional maximum rows to return. If None or <= 0, returns all transactions.
+    """
     query = """
         SELECT t.trade_id, t.account_id, a.user_name, t.symbol, 
                t.transaction_type, t.quantity, t.price, t.trade_date, 
@@ -536,11 +542,23 @@ def get_recent_transactions(
         query += " WHERE t.account_id = ?"
         params.append(account_id)
 
-    query += " ORDER BY t.trade_date DESC, t.created_at DESC LIMIT ?;"
-    params.append(limit)
+    query += " ORDER BY t.trade_date DESC, t.created_at DESC"
+    if limit is not None and limit > 0:
+        query += " LIMIT ?;"
+        params.append(limit)
+    else:
+        query += ";"
 
     rows = conn.execute(query, params).fetchall()
     return [dict(row) for row in rows]
+
+
+def get_all_transactions(
+    conn: sqlite3.Connection,
+    account_id: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Retrieve all historical transactions with account metadata without truncation."""
+    return get_recent_transactions(conn, account_id=account_id, limit=None)
 
 
 # --- Database Backup and Restore Utilities ---

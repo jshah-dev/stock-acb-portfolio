@@ -644,4 +644,41 @@ def test_upload_view_confirmation_safety_layer(qapp, db_conn, tmp_path, monkeypa
     uv.close()
 
 
+def test_transaction_history_dialog_unlimited_and_search(qapp, db_conn):
+    """Verify TransactionHistoryDialog loads all trades without 300 limit and search finds older trades."""
+    # Insert 320 trades (315 TCS + 5 AARTIDRUGS)
+    for i in range(315):
+        insert_manual_transaction(
+            db_conn, "ZERODHA_SELF", "TCS", "BUY", 10, 3000.0, f"2023-01-01 00:00:{i%60:02d}"
+        )
+    for i in range(5):
+        insert_manual_transaction(
+            db_conn, "ZERODHA_SELF", "AARTIDRUGS", "BUY", 20, 450.0, f"2022-05-01 00:00:{i%60:02d}"
+        )
+
+    dlg = TransactionHistoryDialog(db_conn)
+    dlg.show()
+
+    # Verify all 320 trades are loaded (not capped at 300)
+    assert dlg.table.rowCount() == 320
+    assert "320 trade(s)" in dlg.lbl_count.text()
+
+    # Search for AARTIDRUGS: should find all 5 trades even though they are older
+    dlg.txt_search.setText("AARTIDRUGS")
+    visible = [r for r in range(dlg.table.rowCount()) if not dlg.table.isRowHidden(r)]
+    assert len(visible) == 5
+    assert "Showing 5 of 320 trade(s)" in dlg.lbl_count.text()
+
+    for r in visible:
+        assert dlg.table.item(r, 2).text() == "AARTIDRUGS"
+
+    # Clear search
+    dlg.txt_search.setText("")
+    visible_all = [r for r in range(dlg.table.rowCount()) if not dlg.table.isRowHidden(r)]
+    assert len(visible_all) == 320
+
+    dlg.close()
+
+
+
 
