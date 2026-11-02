@@ -1,6 +1,11 @@
 """Shared test fixtures for Portfolio Tracker pytest suite."""
 
+import os
 import sys
+
+# Default to offscreen platform for headless environments (e.g. CI/CD)
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
 import pytest
 from PySide6.QtWidgets import QApplication
 
@@ -20,14 +25,9 @@ def clean_qt_events(qapp):
     yield
     for widget in qapp.topLevelWidgets():
         widget.close()
+        widget.deleteLater()
     qapp.processEvents()
     qapp.sendPostedEvents()
 
-
-def pytest_sessionfinish(session, exitstatus):
-    """Gracefully terminate process to prevent Python 3.15 / Qt C++ destructor race."""
-    import os
-    if exitstatus == 0:
-        os._exit(0)
 
 
