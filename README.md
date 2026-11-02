@@ -32,6 +32,8 @@ Track positions with mathematical precision through 9 dedicated columns:
 > ### **Actual Exposure − Booked P&L = Net Exposure**  
 > - **Pure House Money (Risk-Free):** When cumulative sell proceeds exceed the total purchase cost (`Net Exposure <= 0`), the remaining shares have zero downside capital risk. Effective Average Price displays as **Risk Free** with a badge.  
 > - **Exited / Closed Holdings:** When all shares of a stock have been sold (`Shares Held = 0`), the Effective Average Price cleanly displays **₹0.00** in neutral muted slate, preserving historical booked gains without distortion.
+> - **Instant Holdings Search & Autocomplete:** A search input right above the table filters stocks in real time by ticker or status (e.g., `Active`, `Risk Free`, `Closed`), paired with dynamic autocomplete and a live stock counter.
+> - **Double-Click Script Audit & Context Menu:** Double-clicking any stock row (or right-clicking) instantly opens the **All Trades** audit dialog pre-filtered to all historical trades for that stock, with direct options to inspect records or record manual adjustments.
 
 ---
 
@@ -46,15 +48,20 @@ Companies periodically undergo rebranding, mergers, demergers, or ticker changes
 - **Account Management & Post-Registration Editing:** Safely add, delete, or edit account IDs and Display Names post-registration. Renaming an Account ID automatically and transactionally cascades across all linked historical trades.
 
 ### 4. Zerodha Tradebook Ingestion (100% Offline)
-- Direct drag-and-drop or file upload for Zerodha tradebook exports (`.xlsx` and `.csv`).
+- Direct drag-and-drop or multi-file selection for Zerodha tradebook exports (`.xlsx` and `.csv`).
+- **Multi-Spreadsheet Batch Ingestion:** Select or drop multiple tradebook files simultaneously (e.g., across multiple financial years like FY21-22, FY22-23, FY23-24) to onboard your complete historical ledger in a single operation.
+- **Batch Account Attribution Safety Warning:** Persistent in-app notice and confirmation warnings clarify that by default, all spreadsheets uploaded in a batch are credited to the selected target account, preventing accidental cross-account misattribution.
+- **Cross-File Deduplication:** Inter-file SHA-256 transaction fingerprinting ensures duplicate files or overlapping date ranges across spreadsheets in the batch are deduplicated in memory prior to committing, preventing double-counting.
 - Smart header detection automatically skips metadata banner rows.
-- Idempotent SHA-256 transaction fingerprinting ensures duplicate files or overlapping trade date ranges can be uploaded safely without double-counting.
-- **Pre-Ingestion Confirmation Safety Layer:** Once parsing is complete, the application prompts the user with a clean, concise confirmation dialog displaying the exact number of trades and date range that will be added to the destination account before writing to the database. If the user cancels, the file remains loaded to allow changing accounts with zero friction.
+- **Pre-Ingestion Confirmation Safety Layer:** Once parsing is complete, the application prompts the user with a clean, concise confirmation dialog displaying the exact number of trades, files, and date range that will be added to the destination account before writing to the database. If the user cancels, the files remain loaded to allow changing accounts with zero friction.
 
 ### 5. Manual Trade Entry & Trade Editing (Splits, Bonuses, Corrections)
 - Record off-market transfers, IPO allotments, bonus issues, stock splits, or gift transactions with dedicated preset buttons and real-time ticker autocompletion.
 - **Bonus Shares Support (₹0.00 Price):** Bonus shares can be recorded with an execution price of **₹0.00**. Mathematically, this increases share quantity without adding acquisition cost, correctly lowering the average cost basis per share without skewing capital exposure.
 - Full "All Trades" audit dialog with instant search, auto-fitting, single trade deletion, and **Trade Editing**:
+  - **Unlimited Historical Depth:** Loads the complete trade ledger without arbitrary record limits, ensuring older transactions are never truncated.
+  - **Script-Specific Filtering & Live Counter:** Opens directly from any stock in the Holdings table with search pre-filled, accompanied by a dynamic `Showing X of Y trade(s)` status badge.
+  - **In-Dialog Account Filter:** Switch between "All Accounts (Consolidated)" and specific family member accounts directly within the audit view.
   - Edit any transaction (quantity, price, date, type, account) to account for stock splits (e.g. 1:2) or bonus issues.
   - Mandatory **Reason for Change** note input to document corporate action adjustments.
   - Dedicated **Confirmation Review Tab** comparing Before vs After values side-by-side with difference highlights before applying changes.

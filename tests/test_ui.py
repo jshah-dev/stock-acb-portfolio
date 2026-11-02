@@ -191,18 +191,32 @@ def test_manual_trade_dialog(qapp, db_conn, monkeypatch):
 
     dlg = ManualTradeDialog(db_conn)
 
+    # Verify initial empty fields and placeholders (no pre-filled defaults)
+    assert dlg.txt_qty.text() == ""
+    assert dlg.txt_price.text() == ""
+    assert dlg.txt_qty.placeholderText() != ""
+    assert dlg.txt_price.placeholderText() != ""
+
     # Empty symbol should prevent saving
     dlg.txt_symbol.setText("")
     dlg._on_save()
 
-    # Invalid Quantity should prevent saving
+    # Empty quantity should prevent saving
     dlg.txt_symbol.setText("RELIANCE")
+    dlg._on_save()
+    assert db_conn.execute("SELECT count(*) FROM transactions WHERE symbol = 'RELIANCE';").fetchone()[0] == 0
+
+    # Invalid Quantity should prevent saving
     dlg.txt_qty.setText("0")
     dlg._on_save()
     assert db_conn.execute("SELECT count(*) FROM transactions WHERE symbol = 'RELIANCE';").fetchone()[0] == 0
 
-    # Invalid Price should prevent saving
+    # Empty price should prevent saving
     dlg.txt_qty.setText("25")
+    dlg._on_save()
+    assert db_conn.execute("SELECT count(*) FROM transactions WHERE symbol = 'RELIANCE';").fetchone()[0] == 0
+
+    # Invalid Price should prevent saving
     dlg.txt_price.setText("-50.0")
     dlg._on_save()
     assert db_conn.execute("SELECT count(*) FROM transactions WHERE symbol = 'RELIANCE';").fetchone()[0] == 0
@@ -678,6 +692,209 @@ def test_transaction_history_dialog_unlimited_and_search(qapp, db_conn):
     assert len(visible_all) == 320
 
     dlg.close()
+
+
+def test_holdings_table_search_and_double_click_navigation(qapp, db_conn, monkeypatch):
+    """Verify Holdings table search bar filters rows by symbol/status, and double-click opens audit for script."""
+    from PySide6.QtCore import QPoint
+    from portfolio_tracker.ui.holdings_view import HoldingsView
+    from portfolio_tracker.ui.manual_trade_dialog import ManualTradeDialog
+    from portfolio_tracker.ui.transaction_history_dialog import TransactionHistoryDialog
+
+    # 1. Seed database with multiple stocks
+    # AARTIDRUGS: 5 buys, 1 sell
+    for i in range(5):
+        insert_manual_transaction(db_conn, "ZERODHA_SELF", "AARTIDRUGS", "BUY", 10, 400.0, f"2023-01-0{i+1}")
+    insert_manual_transaction(db_conn, "ZERODHA_SELF", "AARTIDRUGS", "SELL", 20, 600.0, "2023-02-01")
+
+    # RELIANCE: 2 buys
+    insert_manual_transaction(db_conn, "ZERODHA_SELF", "RELIANCE", "BUY", 15, 2500.0, "2023-03-01")
+    insert_manual_transaction(db_conn, "ZERODHA_SELF", "RELIANCE", "BUY", 10, 2600.0, "2023-03-05")
+
+    # TCS: 1 buy
+    insert_manual_transaction(db_conn, "ZERODHA_SELF", "TCS", "BUY", 5, 3500.0, "2023-04-01")
+
+    hv = HoldingsView(db_conn)
+    hv.show()
+
+    # Verify 3 stocks present in Holdings table
+    assert hv.table.rowCount() == 3
+    assert "3 stocks" in hv.lbl_holdings_count.text()
+
+    # 2. Test Holdings table search filtering by symbol
+    hv.txt_search_holdings.setText("AARTI")
+    visible_rows = [r for r in range(hv.table.rowCount()) if not hv.table.isRowHidden(r)]
+    assert len(visible_rows) == 1
+    assert hv.table.item(visible_rows[0], 0).text() == "AARTIDRUGS"
+    assert "Showing 1 of 3 stocks" in hv.lbl_holdings_count.text()
+
+    # Clear search
+    hv.txt_search_holdings.setText("")
+    visible_all = [r for r in range(hv.table.rowCount()) if not hv.table.isRowHidden(r)]
+    assert len(visible_all) == 3
+    assert "3 stocks" in hv.lbl_holdings_count.text()
+
+    # 3. Test Holdings table search filtering by status (e.g. "Active")
+    hv.txt_search_holdings.setText("Active")
+    visible_status = [r for r in range(hv.table.rowCount()) if not hv.table.isRowHidden(r)]
+    assert len(visible_status) >= 1
+    hv.txt_search_holdings.setText("")
+
+    # 4. Test double click on holding row opens TransactionHistoryDialog with initial_search
+    recorded_symbol = []
+    original_open_audit = hv._open_transaction_audit
+
+    def mock_open_audit(symbol=None):
+        recorded_symbol.append(symbol)
+
+    monkeypatch.setattr(hv, "_open_transaction_audit", mock_open_audit)
+
+    # Find row index for AARTIDRUGS
+    aarti_row = None
+    for r in range(hv.table.rowCount()):
+        if "AARTIDRUGS" in hv.table.item(r, 0).text():
+            aarti_row = r
+            break
+    assert aarti_row is not None
+
+    # Simulate double-click on AARTIDRUGS row
+    hv._on_table_cell_double_clicked(aarti_row, 0)
+    assert len(recorded_symbol) == 1
+    assert recorded_symbol[0] == "AARTIDRUGS"
+
+    # 5. Verify TransactionHistoryDialog with initial_search pre-populates and filters immediately
+    hist_dlg = TransactionHistoryDialog(db_conn, initial_search="AARTIDRUGS")
+    assert "AARTIDRUGS" in hist_dlg.windowTitle()
+    assert hist_dlg.txt_search.text() == "AARTIDRUGS"
+    hist_visible = [r for r in range(hist_dlg.table.rowCount()) if not hist_dlg.table.isRowHidden(r)]
+    assert len(hist_visible) == 6  # 5 buys + 1 sell
+    assert "Showing 6 of 9 trade(s)" in hist_dlg.lbl_count.text()
+    hist_dlg.close()
+
+    # 6. Verify ManualTradeDialog with initial_symbol pre-populates symbol field
+    man_dlg = ManualTradeDialog(db_conn, initial_symbol="AARTIDRUGS")
+    assert man_dlg.txt_symbol.text() == "AARTIDRUGS"
+    man_dlg.close()
+
+    # 7. Verify right-click context menu generates expected actions
+    menu_actions = []
+
+    def mock_show_context_menu(menu, pos):
+        menu_actions.extend([act.text() for act in menu.actions()])
+
+    monkeypatch.setattr(hv, "_show_context_menu", mock_show_context_menu)
+    cell_rect = hv.table.visualItemRect(hv.table.item(aarti_row, 0))
+    hv._on_table_context_menu(cell_rect.center())
+    assert any("View All Trades for AARTIDRUGS" in act for act in menu_actions)
+    assert any("Add Manual Trade for AARTIDRUGS" in act for act in menu_actions)
+    assert any("Copy Symbol (AARTIDRUGS)" in act for act in menu_actions)
+
+    hv.close()
+
+
+def test_holdings_table_startup_alphabetical_symbol_sort(qapp, db_conn):
+    """Verify that Holdings table at startup always sorts by symbol alphabetically ascending."""
+    from portfolio_tracker.ui.holdings_view import HoldingsView
+
+    # Insert transactions in non-alphabetical order
+    insert_manual_transaction(db_conn, "ZERODHA_SELF", "ZOMATO", "BUY", 100, 150.0, "2024-01-01")
+    insert_manual_transaction(db_conn, "ZERODHA_SELF", "TCS", "BUY", 10, 3500.0, "2024-01-02")
+    insert_manual_transaction(db_conn, "ZERODHA_SELF", "AARTIDRUGS", "BUY", 50, 450.0, "2024-01-03")
+    insert_manual_transaction(db_conn, "ZERODHA_SELF", "INFY", "BUY", 30, 1600.0, "2024-01-04")
+
+    hv = HoldingsView(db_conn)
+    header = hv.table.horizontalHeader()
+    assert header.sortIndicatorSection() == 0
+    assert header.sortIndicatorOrder() == Qt.AscendingOrder
+
+    # Verify rows in table are strictly in alphabetical ascending order: AARTIDRUGS, INFY, TCS, ZOMATO
+    symbols = [hv.table.item(r, 0).text() for r in range(hv.table.rowCount())]
+    assert symbols == ["AARTIDRUGS", "INFY", "TCS", "ZOMATO"]
+
+    hv.close()
+
+
+def test_upload_view_multiple_files_and_account_warning(qapp, db_conn, tmp_path, monkeypatch):
+    """Verify UploadView multi-spreadsheet batch selection, account warning notice, and inter-file deduplication."""
+    from PySide6.QtWidgets import QMessageBox
+
+    # File 1: 2 trades (INFY, TCS)
+    csv1 = tmp_path / "tradebook_fy23.csv"
+    csv1.write_text(
+        "Trade Date,TradingSymbol,Trade Type,Quantity,Price,Trade ID\n"
+        "2023-01-10 10:15:00,INFY,BUY,100,1500.00,BATCH_01\n"
+        "2023-01-12 11:30:00,TCS,BUY,50,3400.00,BATCH_02\n",
+        encoding="utf-8",
+    )
+
+    # File 2: 2 trades (TCS duplicate of BATCH_02, plus new trade RELIANCE)
+    csv2 = tmp_path / "tradebook_fy24.csv"
+    csv2.write_text(
+        "Trade Date,TradingSymbol,Trade Type,Quantity,Price,Trade ID\n"
+        "2023-01-12 11:30:00,TCS,BUY,50,3400.00,BATCH_02\n"  # Duplicate from file 1!
+        "2024-02-15 14:00:00,RELIANCE,BUY,20,2500.00,BATCH_03\n",
+        encoding="utf-8",
+    )
+
+    uv = UploadView(db_conn)
+    uv.show()
+
+    # Step 1: Verify persistent account warning card is displayed in Step 1
+    assert hasattr(uv, "account_warning_card")
+    assert uv.account_warning_card.isVisible() is True
+    assert "By default, all uploaded files in a batch will be credited to" in uv.lbl_account_warning.text()
+    assert "Please ensure all selected spreadsheets belong to this same family account" in uv.lbl_account_warning.text()
+
+    # Select both files
+    uv._set_selected_files([str(csv1), str(csv2)])
+    assert uv.btn_import.isEnabled() is True
+    assert len(uv.selected_file_paths) == 2
+
+    # Step 2: Verify file card reflects multi-file batch and shows account attribution warning
+    assert "2 Tradebook Files Selected" in uv.lbl_file_name.text()
+    assert "Ready for batch ingestion" in uv.lbl_file_meta.text()
+    curr_acc_name = uv.combo_account.currentText()
+    assert f"⚠️ All 2 files will be credited to account: {curr_acc_name}" in uv.lbl_file_account_notice.text()
+
+    # Verify confirmation safety dialog prompts with explicit account warning
+    questions_asked = []
+    def mock_question(parent, title, text, buttons, default):
+        questions_asked.append((title, text))
+        return QMessageBox.Yes
+
+    monkeypatch.setattr(QMessageBox, "question", mock_question)
+    monkeypatch.setattr(QMessageBox, "information", lambda *args, **kwargs: QMessageBox.Ok)
+
+    signals = []
+    uv.import_completed.connect(lambda: signals.append(True))
+
+    uv._start_import()
+
+    # Verify confirmation dialog content
+    assert len(questions_asked) == 1
+    title, prompt_text = questions_asked[0]
+    assert "Confirm Trade Import" in title
+    # 4 total trades across 2 files, with 1 duplicate skipped (TCS duplicate from File 2) -> 3 new trades to add
+    assert "3 trade(s)" in prompt_text
+    assert "1 duplicate trade(s) will be skipped" in prompt_text
+    assert f"credited to account '{curr_acc_name}'" in prompt_text
+    assert "⚠️ IMPORTANT: By default, all trades from these 2 spreadsheets will be credited" in prompt_text
+
+    # Verify DB has 3 unique transactions (BATCH_01, BATCH_02, BATCH_03)
+    rows = db_conn.execute("SELECT trade_id, symbol FROM transactions ORDER BY trade_id;").fetchall()
+    assert len(rows) == 3
+    assert rows[0][0] == "BATCH_01"
+    assert rows[1][0] == "BATCH_02"
+    assert rows[2][0] == "BATCH_03"
+
+    # Verify status banner shows 2 files ingested and deduplication stats
+    assert uv.status_card.isVisible() is True
+    assert "Files Ingested: 2 spreadsheet(s)" in uv.lbl_status_detail.text()
+    assert "Deduplicated: 1 duplicate entries automatically skipped" in uv.lbl_status_detail.text()
+    assert len(signals) == 1
+
+    uv.close()
+
 
 
 

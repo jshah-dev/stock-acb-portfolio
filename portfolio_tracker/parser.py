@@ -125,6 +125,7 @@ def extract_tradebook_records(
     file_path: Union[str, Path],
     account_id: str,
     db_conn: sqlite3.Connection,
+    existing_ids: Optional[Set[str]] = None,
 ) -> Tuple[List[Tuple[Any, ...]], int, int]:
     """Parse a Zerodha Tradebook file (CSV or Excel) and extract validated records without committing.
 
@@ -163,10 +164,11 @@ def extract_tradebook_records(
     has_trade_id = "trade_id" in col_map
 
     # Query existing trade_ids in the database to accurately calculate duplicates
-    existing_ids: Set[str] = {
-        row[0]
-        for row in db_conn.execute("SELECT trade_id FROM transactions;").fetchall()
-    }
+    if existing_ids is None:
+        existing_ids = {
+            row[0]
+            for row in db_conn.execute("SELECT trade_id FROM transactions;").fetchall()
+        }
 
     records_to_insert: List[Tuple[Any, ...]] = []
     total_valid_rows = 0

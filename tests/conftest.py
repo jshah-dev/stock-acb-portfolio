@@ -16,6 +16,9 @@ def qapp():
     app = QApplication.instance()
     if app is None:
         app = QApplication(sys.argv + ["-platform", "offscreen"])
+        from PySide6.QtGui import QFont
+        from portfolio_tracker.ui.styles import SYSTEM_FONT
+        app.setFont(QFont(SYSTEM_FONT, 13))
     return app
 
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import sqlite3
 from pathlib import Path
+from typing import List, Optional, Set, Union
 
 from PySide6.QtCore import QDate, Qt, Signal
 from PySide6.QtGui import QDragEnterEvent, QDropEvent
@@ -35,9 +36,10 @@ from portfolio_tracker.ui.styles import configure_modern_calendar, set_style_cla
 
 
 class DropZoneWidget(QFrame):
-    """Modern drag-and-drop file upload target widget."""
+    """Modern drag-and-drop file upload target widget supporting single or multiple spreadsheets."""
 
-    file_dropped = Signal(str)
+    files_dropped = Signal(list)
+    file_dropped = Signal(str)  # Kept for backward compatibility
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -61,12 +63,12 @@ class DropZoneWidget(QFrame):
         self.lbl_icon.setAlignment(Qt.AlignCenter)
         layout.addWidget(self.lbl_icon, alignment=Qt.AlignCenter)
 
-        self.lbl_main = QLabel("Drag & drop your Zerodha Tradebook file here")
+        self.lbl_main = QLabel("Drag & drop your Zerodha Tradebook file(s) here")
         self.lbl_main.setStyleSheet("font-size: 15px; font-weight: 600; color: #1E293B; background: transparent;")
         self.lbl_main.setAlignment(Qt.AlignCenter)
         layout.addWidget(self.lbl_main)
 
-        self.lbl_sub = QLabel("Supports Excel (.xlsx, .xls) and CSV (.csv) exports")
+        self.lbl_sub = QLabel("Supports Excel (.xlsx, .xls) and CSV (.csv) exports • Select single or multiple files")
         self.lbl_sub.setStyleSheet("font-size: 13px; color: #64748B; background: transparent;")
         self.lbl_sub.setAlignment(Qt.AlignCenter)
         layout.addWidget(self.lbl_sub)
@@ -82,15 +84,17 @@ class DropZoneWidget(QFrame):
     def dragEnterEvent(self, event: QDragEnterEvent):
         if event.mimeData().hasUrls():
             urls = event.mimeData().urls()
-            if urls:
-                fpath = urls[0].toLocalFile()
-                ext = Path(fpath).suffix.lower()
-                if ext in (".xlsx", ".xls", ".csv"):
-                    event.acceptProposedAction()
-                    self.setProperty("class", "drop-zone-active")
-                    self.style().unpolish(self)
-                    self.style().polish(self)
-                    return
+            valid = [
+                u.toLocalFile()
+                for u in urls
+                if Path(u.toLocalFile()).suffix.lower() in (".xlsx", ".xls", ".csv")
+            ]
+            if valid:
+                event.acceptProposedAction()
+                self.setProperty("class", "drop-zone-active")
+                self.style().unpolish(self)
+                self.style().polish(self)
+                return
         event.ignore()
 
     def dragLeaveEvent(self, event):
@@ -105,13 +109,16 @@ class DropZoneWidget(QFrame):
         self.style().polish(self)
 
         urls = event.mimeData().urls()
-        if urls:
-            fpath = urls[0].toLocalFile()
-            ext = Path(fpath).suffix.lower()
-            if ext in (".xlsx", ".xls", ".csv"):
-                event.acceptProposedAction()
-                self.file_dropped.emit(fpath)
-                return
+        valid = [
+            u.toLocalFile()
+            for u in urls
+            if Path(u.toLocalFile()).suffix.lower() in (".xlsx", ".xls", ".csv")
+        ]
+        if valid:
+            event.acceptProposedAction()
+            self.files_dropped.emit(valid)
+            self.file_dropped.emit(valid[0])
+            return
         event.ignore()
 
     def mousePressEvent(self, event):
@@ -119,14 +126,15 @@ class DropZoneWidget(QFrame):
             self._browse_file()
 
     def _browse_file(self):
-        fpath, _ = QFileDialog.getOpenFileName(
+        fpaths, _ = QFileDialog.getOpenFileNames(
             self,
-            "Select Zerodha Tradebook File",
+            "Select Zerodha Tradebook File(s)",
             str(Path.home()),
             "Excel & CSV Tradebooks (*.xlsx *.xls *.csv);;All Files (*.*)",
         )
-        if fpath:
-            self.file_dropped.emit(fpath)
+        if fpaths:
+            self.files_dropped.emit(fpaths)
+            self.file_dropped.emit(fpaths[0])
 
 
 class UploadView(QWidget):
@@ -137,6 +145,7 @@ class UploadView(QWidget):
     def __init__(self, db_conn: sqlite3.Connection, parent=None):
         super().__init__(parent)
         self.db_conn = db_conn
+        self.selected_file_paths: List[str] = []
         self.selected_file_path: str = ""
         self._init_ui()
         self.refresh_accounts()
@@ -231,6 +240,30 @@ class UploadView(QWidget):
         acc_controls.addWidget(self.btn_manual_trade)
         s1_layout.addLayout(acc_controls)
 
+        # Multi-file default account warning banner
+        self.account_warning_card = QFrame()
+        self.account_warning_card.setStyleSheet(
+            "background-color: #FEF3C7; border: 1.5px solid #F59E0B; border-radius: 8px; padding: 10px 14px;"
+        )
+        warn_box = QHBoxLayout(self.account_warning_card)
+        warn_box.setContentsMargins(0, 0, 0, 0)
+        warn_box.setSpacing(10)
+
+        warn_icon = QLabel("⚠️")
+        warn_icon.setStyleSheet("font-size: 16px; background: transparent;")
+        warn_box.addWidget(warn_icon)
+
+        self.lbl_account_warning = QLabel(
+            "Note: By default, all uploaded files in a batch will be credited to the account selected above. "
+            "Please ensure all selected spreadsheets belong to this same family account."
+        )
+        self.lbl_account_warning.setStyleSheet("color: #92400E; font-size: 12px; font-weight: 500; background: transparent;")
+        self.lbl_account_warning.setWordWrap(True)
+        warn_box.addWidget(self.lbl_account_warning, 1)
+
+        s1_layout.addWidget(self.account_warning_card)
+        self.combo_account.currentIndexChanged.connect(self._on_account_changed)
+
         # Cutoff Date / Calendar control on Import tab
         date_controls = QHBoxLayout()
         date_controls.setSpacing(10)
@@ -271,7 +304,7 @@ class UploadView(QWidget):
         num2.setProperty("class", "step-number")
         s2_header.addWidget(num2)
 
-        lbl_s2 = QLabel("Select or Drag & Drop File")
+        lbl_s2 = QLabel("Select or Drag & Drop File(s)")
         lbl_s2.setStyleSheet("font-size: 15px; font-weight: 600; color: #0F172A;")
         s2_header.addWidget(lbl_s2)
         s2_header.addStretch()
@@ -279,6 +312,7 @@ class UploadView(QWidget):
 
         # Drag and Drop Target
         self.drop_zone = DropZoneWidget()
+        self.drop_zone.files_dropped.connect(self._set_selected_files)
         self.drop_zone.file_dropped.connect(self._set_selected_file)
         s2_layout.addWidget(self.drop_zone)
 
@@ -298,9 +332,13 @@ class UploadView(QWidget):
         self.lbl_file_meta = QLabel("")
         self.lbl_file_meta.setStyleSheet("color: #059669; font-size: 12px; font-weight: 500;")
         file_text_box.addWidget(self.lbl_file_meta)
+
+        self.lbl_file_account_notice = QLabel("")
+        self.lbl_file_account_notice.setStyleSheet("color: #B45309; font-size: 12px; font-weight: 600; margin-top: 2px;")
+        file_text_box.addWidget(self.lbl_file_account_notice)
         fc_layout.addLayout(file_text_box, 1)
 
-        self.btn_change_file = QPushButton("Change File")
+        self.btn_change_file = QPushButton("Change / Add Files")
         self.btn_change_file.clicked.connect(self.drop_zone._browse_file)
         fc_layout.addWidget(self.btn_change_file)
 
@@ -327,7 +365,7 @@ class UploadView(QWidget):
         s3_header.addStretch()
         s3_layout.addLayout(s3_header)
 
-        self.btn_import = QPushButton("Import & Process Trades")
+        self.btn_import = QPushButton("Import && Process Trades")
         set_style_class(self.btn_import, "success-btn")
         self.btn_import.setMinimumHeight(44)
         self.btn_import.setStyleSheet(
@@ -416,69 +454,158 @@ class UploadView(QWidget):
         idx = self.combo_account.findData(current)
         if idx >= 0:
             self.combo_account.setCurrentIndex(idx)
+        self._on_account_changed()
 
-    def _set_selected_file(self, fpath: str):
-        """Update UI with selected file details."""
-        if not fpath or not Path(fpath).is_file():
+    def _on_account_changed(self):
+        """Update account warning notices dynamically when selected account changes."""
+        target_name = self.combo_account.currentText()
+        if hasattr(self, "lbl_account_warning"):
+            self.lbl_account_warning.setText(
+                f"Note: By default, all uploaded files in a batch will be credited to '{target_name}'. "
+                "Please ensure all selected spreadsheets belong to this same family account."
+            )
+        if hasattr(self, "selected_file_paths") and self.selected_file_paths:
+            count = len(self.selected_file_paths)
+            file_word = "file" if count == 1 else "files"
+            self.lbl_file_account_notice.setText(
+                f"⚠️ All {count} {file_word} will be credited to account: {target_name}"
+            )
+
+    def _set_selected_files(self, fpaths: Union[str, List[str]]):
+        """Update UI with selected file(s) details."""
+        if isinstance(fpaths, str):
+            fpaths = [fpaths]
+
+        valid_paths = [p for p in fpaths if p and Path(p).is_file()]
+        if not valid_paths:
             return
 
-        self.selected_file_path = fpath
-        p = Path(fpath)
-        try:
-            size_kb = os.path.getsize(p) / 1024.0
-            size_str = f"{size_kb:,.1f} KB" if size_kb < 1024 else f"{(size_kb/1024):,.2f} MB"
-        except Exception:
-            size_str = ""
+        self.selected_file_paths = valid_paths
+        self.selected_file_path = valid_paths[0]  # Backward compatibility
 
-        self.lbl_file_name.setText(f"File: {p.name}")
-        self.lbl_file_meta.setText(f"Ready for ingestion • {size_str} • {p.suffix.upper()[1:]} File")
+        total_bytes = 0
+        for p_str in valid_paths:
+            try:
+                total_bytes += os.path.getsize(Path(p_str))
+            except Exception:
+                pass
+
+        size_kb = total_bytes / 1024.0
+        size_str = f"{size_kb:,.1f} KB" if size_kb < 1024 else f"{(size_kb/1024):,.2f} MB"
+        target_name = self.combo_account.currentText()
+        count = len(valid_paths)
+
+        if count == 1:
+            p = Path(valid_paths[0])
+            self.lbl_file_name.setText(f"File: {p.name}")
+            self.lbl_file_meta.setText(f"Ready for ingestion • {size_str} • {p.suffix.upper()[1:]} File")
+        else:
+            names = [Path(p).name for p in valid_paths]
+            names_summary = ", ".join(names[:2])
+            if count > 2:
+                names_summary += f", +{count - 2} more"
+            self.lbl_file_name.setText(f"{count} Tradebook Files Selected ({names_summary})")
+            self.lbl_file_meta.setText(f"Ready for batch ingestion • Total size: {size_str} • {count} spreadsheets")
+
+        file_word = "file" if count == 1 else "files"
+        self.lbl_file_account_notice.setText(
+            f"⚠️ All {count} {file_word} will be credited to account: {target_name}"
+        )
         self.file_card.setVisible(True)
         self.drop_zone.setVisible(False)
         self.btn_import.setEnabled(True)
 
+    def _set_selected_file(self, fpath: str):
+        """Backward-compatibility single file alias."""
+        self._set_selected_files(fpath)
+
     def _start_import(self):
-        if not self.selected_file_path or not Path(self.selected_file_path).is_file():
-            QMessageBox.warning(self, "No File", "Please select a valid tradebook file first.")
-            return
-
-        target_acc_id = self.combo_account.currentData()
-        target_name = self.combo_account.currentText()
-
-        try:
-            # 1. Parse and validate file records without committing
-            records_to_insert, dupes, total = extract_tradebook_records(
-                file_path=self.selected_file_path,
-                account_id=target_acc_id,
-                db_conn=self.db_conn,
-            )
-
-            if total == 0:
-                QMessageBox.warning(self, "No Valid Trades", "No valid trade records were found in this file.")
+        if not self.selected_file_paths:
+            if self.selected_file_path and Path(self.selected_file_path).is_file():
+                self.selected_file_paths = [self.selected_file_path]
+            else:
+                QMessageBox.warning(self, "No File", "Please select valid tradebook file(s) first.")
                 return
 
-            new_count = len(records_to_insert)
+        try:
+            target_acc_id = self.combo_account.currentData()
+            target_name = self.combo_account.currentText()
+
+            all_records_to_insert = []
+            total_valid = 0
+            total_dupes = 0
+            file_errors = []
+
+            # Track existing IDs across DB + previous files in this batch to prevent inter-file duplicate inflation
+            existing_ids: Set[str] = {
+                row[0]
+                for row in self.db_conn.execute("SELECT trade_id FROM transactions;").fetchall()
+            }
+
+            # 1. Parse and validate each file
+            for fpath in self.selected_file_paths:
+                try:
+                    records, dupes, total = extract_tradebook_records(
+                        file_path=fpath,
+                        account_id=target_acc_id,
+                        db_conn=self.db_conn,
+                        existing_ids=existing_ids,
+                    )
+                    all_records_to_insert.extend(records)
+                    total_dupes += dupes
+                    total_valid += total
+                except Exception as e:
+                    file_errors.append(f"• {Path(fpath).name}: {e}")
+
+            if file_errors:
+                err_msg = "\n".join(file_errors)
+                QMessageBox.critical(
+                    self,
+                    "Parsing Error",
+                    f"Failed to process one or more tradebook spreadsheets:\n\n{err_msg}",
+                )
+                return
+
+            if total_valid == 0:
+                QMessageBox.warning(self, "No Valid Trades", "No valid trade records were found in the selected file(s).")
+                return
+
+            new_count = len(all_records_to_insert)
+            num_files = len(self.selected_file_paths)
+            file_label = f"from {num_files} files" if num_files > 1 else ""
+            file_label_spaced = f" {file_label}" if file_label else ""
+
             if new_count == 0:
+                scope = f"in the selected {num_files} files" if num_files > 1 else "in this file"
                 QMessageBox.information(
                     self,
                     "All Trades Already Imported",
-                    f"All {total} trade(s) in this file have already been imported into '{target_name}'.\n\n"
+                    f"All {total_valid} trade(s) {scope} have already been imported into '{target_name}'.\n\n"
                     "No new trades were added.",
                 )
                 return
 
-            # 2. Safety Layer: Clean, senior-friendly confirmation prompt
-            dates = [r[6][:10] for r in records_to_insert if r[6]]
+            # 2. Safety Layer: Clean confirmation prompt with explicit account warning
+            dates = [r[6][:10] for r in all_records_to_insert if r[6]]
             date_span = f" (Date Range: {min(dates)} to {max(dates)})" if dates else ""
 
-            if dupes > 0:
+            account_warning_line = (
+                f"\n\n⚠️ IMPORTANT: By default, all trades from these {num_files} spreadsheets will be credited "
+                f"to account '{target_name}'. Please ensure all files belong to this account."
+                if num_files > 1
+                else ""
+            )
+
+            if total_dupes > 0:
                 confirm_text = (
-                    f"{new_count} trade(s){date_span} will be added to account '{target_name}'.\n"
-                    f"({dupes} duplicate trade(s) will be skipped)\n\n"
+                    f"{new_count} trade(s){date_span}{file_label_spaced} will be added to account '{target_name}'.\n"
+                    f"({total_dupes} duplicate trade(s) will be skipped){account_warning_line}\n\n"
                     "Are you sure you want to proceed?"
                 )
             else:
                 confirm_text = (
-                    f"{new_count} trade(s){date_span} will be added to account '{target_name}'.\n\n"
+                    f"{new_count} trade(s){date_span}{file_label_spaced} will be added to account '{target_name}'."
+                    f"{account_warning_line}\n\n"
                     "Are you sure you want to proceed?"
                 )
 
@@ -494,7 +621,7 @@ class UploadView(QWidget):
                 return
 
             # 3. User confirmed: commit batch insert to database
-            inserted = commit_tradebook_records(records_to_insert, self.db_conn)
+            inserted = commit_tradebook_records(all_records_to_insert, self.db_conn)
 
             # Display Status Banner
             self.status_card.setVisible(True)
@@ -503,29 +630,33 @@ class UploadView(QWidget):
             )
             self.lbl_status_title.setText(f"Ingestion Completed for {target_name}")
             self.lbl_status_title.setStyleSheet("font-size: 16px; font-weight: 700; color: #15803D;")
+            file_summary_line = f"• Files Ingested: {num_files} spreadsheet(s).\n" if num_files > 1 else ""
             self.lbl_status_detail.setText(
-                f"• Processed: {total} total trade executions.\n"
-                f"• Added: {inserted} new transactions inserted.\n"
-                f"• Deduplicated: {dupes} duplicate entries automatically skipped."
+                f"{file_summary_line}"
+                f"• Processed: {total_valid} total trade executions.\n"
+                f"• Added: {inserted} new transactions inserted into '{target_name}'.\n"
+                f"• Deduplicated: {total_dupes} duplicate entries automatically skipped."
             )
             self.lbl_status_detail.setStyleSheet("font-size: 13px; color: #166534; line-height: 1.5;")
 
             # Reset file card and dropzone
             self.file_card.setVisible(False)
             self.drop_zone.setVisible(True)
+            self.selected_file_paths = []
             self.selected_file_path = ""
             self.btn_import.setEnabled(False)
 
             # Signal dashboard to reload
             self.import_completed.emit()
 
+            file_desc = f"{num_files} files" if num_files > 1 else "tradebook"
             QMessageBox.information(
                 self,
                 "Import Successful",
-                f"Successfully processed {target_name}:\n\n"
+                f"Successfully processed {file_desc} for {target_name}:\n\n"
                 f"• Added: {inserted} new trades\n"
-                f"• Duplicates skipped: {dupes}\n"
-                f"• Total processed: {total}",
+                f"• Duplicates skipped: {total_dupes}\n"
+                f"• Total processed: {total_valid}",
             )
 
         except Exception as e:

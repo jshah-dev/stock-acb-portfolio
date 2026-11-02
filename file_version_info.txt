@@ -4,8 +4,8 @@
 #
 VSVersionInfo(
   ffi=FixedFileInfo(
-    filevers=(1, 0, 0, 0),
-    prodvers=(1, 0, 0, 0),
+    filevers=(1, 1, 0, 0),
+    prodvers=(1, 1, 0, 0),
     mask=0x3f,
     flags=0x0,
     OS=0x40004,
@@ -21,12 +21,12 @@ VSVersionInfo(
           [
             StringStruct('CompanyName', 'JShah'),
             StringStruct('FileDescription', 'Stock ACB Portfolio Tracker'),
-            StringStruct('FileVersion', '1.0.0.0'),
+            StringStruct('FileVersion', '1.1.0.0'),
             StringStruct('InternalName', 'StockACBPortfolioTracker.exe'),
             StringStruct('LegalCopyright', 'Copyright © 2026 JShah (https://github.com/jshah-dev)'),
             StringStruct('OriginalFilename', 'StockACBPortfolioTracker.exe'),
             StringStruct('ProductName', 'Stock ACB Portfolio Tracker'),
-            StringStruct('ProductVersion', '1.0.0.0'),
+            StringStruct('ProductVersion', '1.1.0.0'),
             StringStruct('Comments', 'https://github.com/jshah-dev/stock-acb-portfolio')
           ]
         )

@@ -36,6 +36,7 @@ from portfolio_tracker.db import (
     update_transaction,
 )
 from portfolio_tracker.ui.styles import (
+    SYSTEM_MONO_FONT,
     NumericTableWidgetItem,
     configure_modern_calendar,
     set_style_class,
@@ -92,8 +93,8 @@ class EditTradeDialog(QDialog):
         # Trade ID chip
         chip = QLabel(f"Trade ID: {self.trade_id}")
         chip.setStyleSheet(
-            "background-color: #F1F5F9; border: 1px solid #CBD5E1; border-radius: 6px; "
-            "color: #475569; font-size: 11px; font-family: monospace; padding: 4px 10px;"
+            f"background-color: #F1F5F9; border: 1px solid #CBD5E1; border-radius: 6px; "
+            f"color: #475569; font-size: 11px; font-family: {SYSTEM_MONO_FONT}; padding: 4px 10px;"
         )
         header_layout.addWidget(chip, alignment=Qt.AlignTop)
 

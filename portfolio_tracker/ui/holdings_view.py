@@ -8,20 +8,23 @@ from pathlib import Path
 from typing import Optional
 
 import pandas as pd
-from PySide6.QtCore import QDate, Qt, Signal
+from PySide6.QtCore import QDate, QStringListModel, Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
     QCheckBox,
     QComboBox,
+    QCompleter,
     QDateEdit,
     QFileDialog,
     QFrame,
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QLineEdit,
     QListView,
+    QMenu,
     QMessageBox,
     QPushButton,
     QScrollArea,
@@ -31,7 +34,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from portfolio_tracker.db import get_accounts
+from portfolio_tracker.db import get_accounts, get_all_symbols
 from portfolio_tracker.engine import get_holdings, get_portfolio_summary
 from portfolio_tracker.exporter import export_portfolio_to_excel
 from portfolio_tracker.ui.account_manager_dialog import AccountManagerDialog
@@ -59,6 +62,8 @@ class HoldingsView(QWidget):
         self._init_ui()
         self.refresh_accounts()
         self.refresh_data()
+        # Ensure Holdings table at startup always sorts by Stock Symbol (Col 0) alphabetically ascending
+        self.table.sortByColumn(0, Qt.AscendingOrder)
 
     def _init_ui(self):
         # Root layout with QScrollArea for responsive scrolling on all screen sizes
@@ -153,7 +158,7 @@ class HoldingsView(QWidget):
         self.btn_manual_trade = QPushButton("+ Add Trade")
         set_style_class(self.btn_manual_trade, "primary-btn")
         self.btn_manual_trade.setToolTip("Record off-market, IPO, corporate action, or manual trade")
-        self.btn_manual_trade.clicked.connect(self._open_manual_trade)
+        self.btn_manual_trade.clicked.connect(lambda: self._open_manual_trade())
         row1_layout.addWidget(self.btn_manual_trade)
 
         self.btn_export = QPushButton("Export Excel")
@@ -176,7 +181,7 @@ class HoldingsView(QWidget):
 
         self.btn_audit = QPushButton("All Trades")
         self.btn_audit.setToolTip("Inspect all transaction records, filter by symbol, or delete entries")
-        self.btn_audit.clicked.connect(self._open_transaction_audit)
+        self.btn_audit.clicked.connect(lambda: self._open_transaction_audit())
         row2_layout.addWidget(self.btn_audit)
 
         controls_layout.addLayout(row2_layout)
@@ -223,14 +228,39 @@ class HoldingsView(QWidget):
         table_title = QLabel("Holdings & Adjusted Cost Basis (ACB) Ledger")
         table_title.setStyleSheet("font-weight: 700; color: #1E293B; font-size: 15px;")
         tbl_hdr.addWidget(table_title)
+
+        self.lbl_holdings_count = QLabel("")
+        self.lbl_holdings_count.setStyleSheet(
+            "background-color: #F1F5F9; border: 1px solid #CBD5E1; border-radius: 10px; "
+            "padding: 2px 8px; font-size: 11px; font-weight: 600; color: #475569; margin-left: 6px;"
+        )
+        tbl_hdr.addWidget(self.lbl_holdings_count)
+
         tbl_hdr.addStretch()
 
-        lbl_legend = QLabel("Identity: Actual Exposure - Booked P&L = Net Exposure  |  (+) Green = Profit  |  (-) Red = Loss / Risk")
+        lbl_legend = QLabel("Identity: Actual Exposure - Booked P&L = Net Exposure")
         lbl_legend.setStyleSheet("color: #64748B; font-size: 12px; font-weight: 500;")
         tbl_hdr.addWidget(lbl_legend)
-        tbl_hdr.addSpacing(12)
+        tbl_hdr.addSpacing(10)
 
-        self.btn_autofit = QPushButton("↔ Auto-Fit Columns")
+        self.txt_search_holdings = QLineEdit()
+        self.txt_search_holdings.setPlaceholderText("🔍 Search symbol or status...")
+        self.txt_search_holdings.setClearButtonEnabled(True)
+        self.txt_search_holdings.setFixedWidth(230)
+        self.holdings_completer = QCompleter([], self)
+        self.holdings_completer.setCaseSensitivity(Qt.CaseInsensitive)
+        self.holdings_completer.setFilterMode(Qt.MatchContains)
+        self.holdings_completer.setCompletionMode(QCompleter.PopupCompletion)
+        popup = self.holdings_completer.popup()
+        popup.setStyleSheet(
+            "background-color: #FFFFFF; border: 1px solid #CBD5E1; border-radius: 6px; font-size: 13px; color: #0F172A;"
+        )
+        self.txt_search_holdings.setCompleter(self.holdings_completer)
+        self.txt_search_holdings.textChanged.connect(self._filter_holdings_table)
+        tbl_hdr.addWidget(self.txt_search_holdings)
+        tbl_hdr.addSpacing(6)
+
+        self.btn_autofit = QPushButton("↔ Auto-Fit")
         self.btn_autofit.setToolTip("Auto-fit column widths to fit content while preserving user drag resizing")
         self.btn_autofit.clicked.connect(self._auto_fit_columns)
         tbl_hdr.addWidget(self.btn_autofit)
@@ -287,6 +317,13 @@ class HoldingsView(QWidget):
         self.table.verticalHeader().setDefaultSectionSize(38)
         self.table.verticalHeader().setVisible(False)
         self.table.setSortingEnabled(True)
+        self.table.sortByColumn(0, Qt.AscendingOrder)
+        self.table.setToolTip(
+            "💡 Tip: Double-click any row to view all trades for that stock. Right-click for more options."
+        )
+        self.table.cellDoubleClicked.connect(self._on_table_cell_double_clicked)
+        self.table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._on_table_context_menu)
         table_layout.addWidget(self.table)
 
         main_layout.addWidget(table_container)
@@ -439,6 +476,7 @@ class HoldingsView(QWidget):
             sym_display = f"{sym_str} 🔀" if has_mapped else sym_str
 
             sym_item = NumericTableWidgetItem(sym_display)
+            sym_item.setData(Qt.UserRole, sym_str)
             sym_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
             sym_item.setData(Qt.FontRole, sym_item.font())
             if has_mapped:
@@ -606,6 +644,81 @@ class HoldingsView(QWidget):
 
         self.table.setSortingEnabled(True)
 
+        # Update symbol suggestions in the search bar completer
+        if not df.empty and "symbol" in df.columns:
+            symbols = sorted([str(s) for s in df["symbol"].dropna().unique().tolist()])
+            self.holdings_completer.setModel(QStringListModel(symbols, self.holdings_completer))
+
+        # Re-apply current search filter (or update stock count)
+        self._filter_holdings_table()
+
+    def _filter_holdings_table(self):
+        """Filter holdings table rows by symbol or status and update count indicator."""
+        query = self.txt_search_holdings.text().strip().lower()
+        total_rows = self.table.rowCount()
+        visible_count = 0
+
+        for r in range(total_rows):
+            sym_item = self.table.item(r, 0)
+            status_item = self.table.item(r, 8)
+
+            sym = ""
+            if sym_item:
+                raw_sym = sym_item.data(Qt.UserRole)
+                sym = (str(raw_sym) if raw_sym else sym_item.text()).lower()
+
+            status = status_item.text().lower() if status_item else ""
+
+            match = (not query) or (query in sym) or (query in status)
+            self.table.setRowHidden(r, not match)
+            if match:
+                visible_count += 1
+
+        if query:
+            self.lbl_holdings_count.setText(f"Showing {visible_count} of {total_rows} stocks")
+        else:
+            self.lbl_holdings_count.setText(f"{total_rows} stocks" if total_rows > 0 else "")
+
+    def _on_table_cell_double_clicked(self, row: int, col: int):
+        """Double-clicking any holding row opens All Trades filtered to that symbol."""
+        symbol_item = self.table.item(row, 0)
+        if not symbol_item:
+            return
+        raw_sym = symbol_item.data(Qt.UserRole)
+        symbol = str(raw_sym).strip() if raw_sym else symbol_item.text().split()[0]
+        if symbol:
+            self._open_transaction_audit(symbol=symbol)
+
+    def _on_table_context_menu(self, pos):
+        """Context menu on right-click offering trade audit, manual trade, and symbol copy."""
+        row = self.table.rowAt(pos.y())
+        if row < 0:
+            return
+        symbol_item = self.table.item(row, 0)
+        if not symbol_item:
+            return
+        raw_sym = symbol_item.data(Qt.UserRole)
+        symbol = str(raw_sym).strip() if raw_sym else symbol_item.text().split()[0]
+        if not symbol:
+            return
+
+        menu = QMenu(self)
+        act_trades = menu.addAction(f"📜 View All Trades for {symbol}")
+        act_trades.triggered.connect(lambda: self._open_transaction_audit(symbol=symbol))
+
+        act_manual = menu.addAction(f"➕ Add Manual Trade for {symbol}")
+        act_manual.triggered.connect(lambda: self._open_manual_trade(symbol=symbol))
+
+        menu.addSeparator()
+        act_copy = menu.addAction(f"📋 Copy Symbol ({symbol})")
+        act_copy.triggered.connect(lambda: QApplication.clipboard().setText(symbol))
+
+        self._show_context_menu(menu, self.table.viewport().mapToGlobal(pos))
+
+    def _show_context_menu(self, menu: QMenu, global_pos):
+        """Display popup context menu at global screen position."""
+        menu.exec(global_pos)
+
     def _open_symbol_mapping(self):
         """Open corporate actions and symbol renaming mapping dialog."""
         dlg = SymbolMappingDialog(self.db_conn, self)
@@ -622,15 +735,19 @@ class HoldingsView(QWidget):
         self.refresh_data()
         self.data_changed.emit()
 
-    def _open_manual_trade(self):
+    def _open_manual_trade(self, symbol: Optional[str] = None):
+        if not isinstance(symbol, str):
+            symbol = ""
         acc_id = self.combo_account.currentData()
-        dlg = ManualTradeDialog(self.db_conn, default_account_id=acc_id, parent=self)
+        dlg = ManualTradeDialog(self.db_conn, default_account_id=acc_id, initial_symbol=symbol, parent=self)
         dlg.trade_added.connect(self._on_trade_modified)
         dlg.exec()
 
-    def _open_transaction_audit(self):
+    def _open_transaction_audit(self, symbol: Optional[str] = None):
+        if not isinstance(symbol, str):
+            symbol = ""
         acc_id = self.combo_account.currentData()
-        dlg = TransactionHistoryDialog(self.db_conn, account_id=acc_id, parent=self)
+        dlg = TransactionHistoryDialog(self.db_conn, account_id=acc_id, initial_search=symbol, parent=self)
         dlg.transaction_deleted.connect(self._on_trade_modified)
         dlg.transaction_updated.connect(self._on_trade_modified)
         dlg.exec()

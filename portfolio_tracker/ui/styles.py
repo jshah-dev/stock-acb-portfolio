@@ -23,10 +23,13 @@ from PySide6.QtWidgets import (
 # Platform-native clean typography to eliminate font-alias search warnings
 if sys.platform == "win32":
     SYSTEM_FONT = "Segoe UI"
+    SYSTEM_MONO_FONT = "Consolas, 'Courier New'"
 elif sys.platform == "darwin":
     SYSTEM_FONT = "Helvetica Neue"
+    SYSTEM_MONO_FONT = "Menlo, Monaco, 'Courier New'"
 else:
     SYSTEM_FONT = "Arial"
+    SYSTEM_MONO_FONT = "'DejaVu Sans Mono', 'Liberation Mono', 'Courier New'"
 
 # Resolved path to SVG chevron icon for comboboxes
 CHEVRON_SVG_PATH = (Path(__file__).parent / "assets" / "chevron_down.svg").resolve().as_posix()
@@ -806,9 +809,9 @@ class NumericTableWidgetItem(QTableWidgetItem):
             try:
                 return float(val1) < float(val2)
             except (ValueError, TypeError):
-                return str(val1) < str(val2)
+                return str(val1).upper() < str(val2).upper()
 
-        return self.text() < other.text()
+        return self.text().upper() < other.text().upper()
 
 
 

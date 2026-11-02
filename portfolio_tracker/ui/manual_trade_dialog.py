@@ -31,10 +31,17 @@ class ManualTradeDialog(QDialog):
 
     trade_added = Signal()
 
-    def __init__(self, db_conn: sqlite3.Connection, default_account_id: str = None, parent=None):
+    def __init__(
+        self,
+        db_conn: sqlite3.Connection,
+        default_account_id: str = None,
+        initial_symbol: str = "",
+        parent=None,
+    ):
         super().__init__(parent)
         self.db_conn = db_conn
         self.default_account_id = default_account_id
+        self.initial_symbol = (initial_symbol or "").strip()
         self.setWindowTitle("Record Manual Trade Adjustment")
         self.setMinimumSize(480, 400)
         self._init_ui()
@@ -88,6 +95,8 @@ class ManualTradeDialog(QDialog):
             "background-color: #FFFFFF; border: 1px solid #CBD5E1; border-radius: 6px; font-size: 13px; color: #0F172A;"
         )
         self.txt_symbol.setCompleter(self.completer)
+        if self.initial_symbol:
+            self.txt_symbol.setText(self.initial_symbol)
         form.addRow("Stock Symbol:", self.txt_symbol)
 
         # 3. Transaction Type
@@ -101,7 +110,6 @@ class ManualTradeDialog(QDialog):
         self.txt_qty = QLineEdit()
         self.txt_qty.setPlaceholderText("e.g. 100")
         self.txt_qty.setValidator(QIntValidator(1, 10_000_000, self))
-        self.txt_qty.setText("100")
         form.addRow("Quantity (Shares):", self.txt_qty)
 
         # 5. Price (Pure number input with decimal validation, no up/down stepper arrows)
@@ -110,7 +118,6 @@ class ManualTradeDialog(QDialog):
         price_val = QDoubleValidator(0.00, 10_000_000.0, 2, self)
         price_val.setNotation(QDoubleValidator.StandardNotation)
         self.txt_price.setValidator(price_val)
-        self.txt_price.setText("100.00")
         form.addRow("Execution Price (₹):", self.txt_price)
 
         # 6. Trade Date (Date only picker, time is not relevant)

@@ -1,4 +1,4 @@
 """Stock ACB Portfolio Tracker - Offline Adjusted Cost Basis (ACB) & Multi-Account Ledger."""
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 

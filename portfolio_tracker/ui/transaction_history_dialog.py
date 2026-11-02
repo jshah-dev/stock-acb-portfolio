@@ -39,12 +39,20 @@ class TransactionHistoryDialog(QDialog):
     transaction_deleted = Signal()
     transaction_updated = Signal()
 
-    def __init__(self, db_conn: sqlite3.Connection, account_id: str = None, parent=None):
+    def __init__(
+        self,
+        db_conn: sqlite3.Connection,
+        account_id: Optional[str] = None,
+        initial_search: str = "",
+        parent=None,
+    ):
         super().__init__(parent)
         self.db_conn = db_conn
         self.account_id = account_id
-        self.setWindowTitle("All Trades")
-        self.setMinimumSize(850, 520)
+        self.initial_search = (initial_search or "").strip()
+        title_suffix = f" - {self.initial_search}" if self.initial_search else ""
+        self.setWindowTitle(f"All Trades{title_suffix}")
+        self.setMinimumSize(900, 540)
         self._init_ui()
         self._load_transactions()
 
@@ -90,6 +98,7 @@ class TransactionHistoryDialog(QDialog):
         # Search Bar with Symbol Autocomplete
         self.txt_search = QLineEdit()
         self.txt_search.setPlaceholderText("Search symbol (e.g. AARTIDRUGS), trade ID, note...")
+        self.txt_search.setClearButtonEnabled(True)
         self.txt_search.setFixedWidth(280)
         symbols = get_all_symbols(self.db_conn)
         self.completer = QCompleter(symbols, self)
@@ -156,6 +165,9 @@ class TransactionHistoryDialog(QDialog):
         btn_layout.addWidget(self.btn_close)
 
         layout.addLayout(btn_layout)
+
+        if self.initial_search:
+            self.txt_search.setText(self.initial_search)
 
     def _auto_fit_columns(self):
         """Auto-fit column widths while keeping resizability intact."""
@@ -260,6 +272,8 @@ class TransactionHistoryDialog(QDialog):
         self._filter_table()
 
     def _filter_table(self):
+        if not hasattr(self, "table") or self.table is None:
+            return
         query = self.txt_search.text().strip().lower()
         selected_acc = self.combo_account.currentData() if hasattr(self, "combo_account") else self.account_id
 
