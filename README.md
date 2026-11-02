@@ -29,14 +29,14 @@ Track positions with mathematical precision through 9 dedicated columns:
 | **9** | **Status / Flag** | Visual status badge: **Active**, **Risk Free (House Money)**, or **Closed** |
 
 > **Core Mathematical Identity:**  
-> $$\text{Actual Exposure} - \text{Booked P\&L} = \text{Net Exposure}$$  
+> ### **Actual Exposure − Booked P&L = Net Exposure**  
 > - **Pure House Money (Risk-Free):** When cumulative sell proceeds exceed the total purchase cost (`Net Exposure <= 0`), the remaining shares have zero downside capital risk. Effective Average Price displays as **Risk Free** with a badge.  
 > - **Exited / Closed Holdings:** When all shares of a stock have been sold (`Shares Held = 0`), the Effective Average Price cleanly displays **₹0.00** in neutral muted slate, preserving historical booked gains without distortion.
 
 ---
 
 ### 2. Corporate Actions & Symbol Name Changes
-Companies periodically undergo rebranding, mergers, demergers, or ticker changes (e.g., `CADILAHC` $\to$ `ZYDUSLIFE`, `MOTHERSUMI` $\to$ `MOTHERSON`).
+Companies periodically undergo rebranding, mergers, demergers, or ticker changes (e.g., `CADILAHC` → `ZYDUSLIFE`, `MOTHERSUMI` → `MOTHERSON`).
 - An interactive **Symbol Mapping** dialog allows you to link old ticker names to their canonical new symbol.
 - Automatically heals cost basis history across name transitions, preventing false "sell without buy" anomalies and preserving continuous ACB calculations.
 
@@ -177,8 +177,8 @@ Build the official Windows setup wizard directly in Microsoft's native Windows c
    ```bash
    git push origin main
    ```
-2. Navigate to your repository on GitHub $\to$ **Actions** tab.
-3. Select **Build Windows Application** $\to$ click **Run workflow**.
+2. Navigate to your repository on GitHub → **Actions** tab.
+3. Select **Build Windows Application** → click **Run workflow**.
 4. GitHub Actions spins up a native `windows-latest` VM, runs the test suite, builds with PyInstaller, and compiles Inno Setup.
 5. In ~3 minutes, download the pre-compiled **`StockACBPortfolioTracker-Windows-Setup`** artifact containing **`StockACBPortfolioTrackerSetup.exe`**.
 6. *(Optional)* Tagging a release (e.g. `git tag v1.0.0 && git push origin v1.0.0`) automatically publishes a GitHub Release with the `.exe` attached as a direct download link.
