@@ -26,6 +26,7 @@ from portfolio_tracker.db import (
     delete_account,
     get_account_transaction_count,
     get_accounts,
+    update_account,
 )
 from portfolio_tracker.ui.styles import NumericTableWidgetItem, set_style_class
 
@@ -80,6 +81,7 @@ class AccountManagerDialog(QDialog):
         self.table.verticalHeader().setDefaultSectionSize(36)
         self.table.verticalHeader().setVisible(False)
         self.table.setSortingEnabled(True)
+        self.table.cellDoubleClicked.connect(lambda row, col: self._on_edit_account())
         layout.addWidget(self.table)
 
         # Action Buttons row
@@ -90,6 +92,11 @@ class AccountManagerDialog(QDialog):
         btn_layout.addWidget(self.btn_autofit)
 
         btn_layout.addStretch()
+
+        self.btn_edit = QPushButton("✏️ Edit Account")
+        set_style_class(self.btn_edit, "primary-btn")
+        self.btn_edit.clicked.connect(self._on_edit_account)
+        btn_layout.addWidget(self.btn_edit)
 
         self.btn_delete = QPushButton("Remove Selected Account")
         set_style_class(self.btn_delete, "danger-btn")
@@ -225,4 +232,123 @@ class AccountManagerDialog(QDialog):
                 )
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Failed to delete account:\n{e}")
+
+    def _on_edit_account(self):
+        selected_rows = self.table.selectionModel().selectedRows()
+        if not selected_rows:
+            QMessageBox.information(self, "Select Account", "Please select an account row to edit.")
+            return
+
+        row_idx = selected_rows[0].row()
+        acc_id = self.table.item(row_idx, 0).text()
+        user_name = self.table.item(row_idx, 1).text()
+        broker = self.table.item(row_idx, 2).text()
+
+        dialog = EditAccountDialog(self.db_conn, acc_id, user_name, broker, parent=self)
+        if dialog.exec():
+            self._load_accounts()
+            self.accounts_changed.emit()
+
+
+class EditAccountDialog(QDialog):
+    """Modal dialog to update account ID, display name, and broker."""
+
+    def __init__(self, db_conn: sqlite3.Connection, account_id: str, user_name: str, broker: str, parent=None):
+        super().__init__(parent)
+        self.db_conn = db_conn
+        self.old_account_id = account_id
+        self.old_user_name = user_name
+        self.old_broker = broker
+        self.setWindowTitle(f"Edit Account - {user_name} ({account_id})")
+        self.setMinimumWidth(440)
+        self._init_ui()
+
+    def _init_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setSpacing(14)
+        layout.setContentsMargins(20, 20, 20, 20)
+
+        title = QLabel("Edit Account Details")
+        title.setStyleSheet("font-size: 16px; font-weight: 700; color: #0F172A;")
+        layout.addWidget(title)
+
+        tx_count = get_account_transaction_count(self.db_conn, self.old_account_id)
+        desc = QLabel(
+            f"Update the identifier or description for this account. "
+            f"This account currently has <b>{tx_count}</b> transaction(s)."
+        )
+        desc.setStyleSheet("color: #64748B; font-size: 13px;")
+        desc.setWordWrap(True)
+        layout.addWidget(desc)
+
+        form = QFormLayout()
+        form.setSpacing(12)
+
+        self.txt_acc_id = QLineEdit(self.old_account_id)
+        self.txt_acc_id.setPlaceholderText("e.g. ZERODHA_MOM")
+
+        self.txt_name = QLineEdit(self.old_user_name)
+        self.txt_name.setPlaceholderText("e.g. Mother's Zerodha")
+
+        self.txt_broker = QLineEdit(self.old_broker)
+        self.txt_broker.setPlaceholderText("e.g. Zerodha")
+
+        form.addRow("Account ID:", self.txt_acc_id)
+        form.addRow("Display Name:", self.txt_name)
+        form.addRow("Broker:", self.txt_broker)
+        layout.addLayout(form)
+
+        tip_label = QLabel(
+            "💡 <i>Note: Renaming the Account ID will automatically and safely update all historical trades linked to this account.</i>"
+        )
+        tip_label.setStyleSheet("color: #64748B; font-size: 11px;")
+        tip_label.setWordWrap(True)
+        layout.addWidget(tip_label)
+
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+
+        self.btn_cancel = QPushButton("Cancel")
+        self.btn_cancel.clicked.connect(self.reject)
+        btn_layout.addWidget(self.btn_cancel)
+
+        self.btn_save = QPushButton("Save Changes")
+        set_style_class(self.btn_save, "primary-btn")
+        self.btn_save.clicked.connect(self._on_save)
+        btn_layout.addWidget(self.btn_save)
+
+        layout.addLayout(btn_layout)
+
+    def _on_save(self):
+        new_id = self.txt_acc_id.text().strip().upper()
+        new_name = self.txt_name.text().strip()
+        new_broker = self.txt_broker.text().strip() or "Zerodha"
+
+        if not new_id:
+            QMessageBox.warning(self, "Invalid ID", "Account ID cannot be empty.")
+            self.txt_acc_id.setFocus()
+            return
+        if not new_name:
+            QMessageBox.warning(self, "Invalid Name", "Display Name / Description cannot be empty.")
+            self.txt_name.setFocus()
+            return
+
+        if (new_id == self.old_account_id and 
+            new_name == self.old_user_name and 
+            new_broker == self.old_broker):
+            self.accept()
+            return
+
+        try:
+            update_account(
+                self.db_conn,
+                old_account_id=self.old_account_id,
+                new_account_id=new_id,
+                new_user_name=new_name,
+                new_broker=new_broker,
+            )
+            QMessageBox.information(self, "Success", f"Account '{new_name}' updated successfully!")
+            self.accept()
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to update account:\n{e}")
 

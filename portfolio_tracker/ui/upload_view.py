@@ -24,7 +24,11 @@ from PySide6.QtWidgets import (
 )
 
 from portfolio_tracker.db import get_accounts
-from portfolio_tracker.parser import parse_tradebook
+from portfolio_tracker.parser import (
+    commit_tradebook_records,
+    extract_tradebook_records,
+    parse_tradebook,
+)
 from portfolio_tracker.ui.account_manager_dialog import AccountManagerDialog
 from portfolio_tracker.ui.manual_trade_dialog import ManualTradeDialog
 from portfolio_tracker.ui.styles import configure_modern_calendar, set_style_class
@@ -441,11 +445,56 @@ class UploadView(QWidget):
         target_name = self.combo_account.currentText()
 
         try:
-            inserted, dupes, total = parse_tradebook(
+            # 1. Parse and validate file records without committing
+            records_to_insert, dupes, total = extract_tradebook_records(
                 file_path=self.selected_file_path,
                 account_id=target_acc_id,
                 db_conn=self.db_conn,
             )
+
+            if total == 0:
+                QMessageBox.warning(self, "No Valid Trades", "No valid trade records were found in this file.")
+                return
+
+            new_count = len(records_to_insert)
+            if new_count == 0:
+                QMessageBox.information(
+                    self,
+                    "All Trades Already Imported",
+                    f"All {total} trade(s) in this file have already been imported into '{target_name}'.\n\n"
+                    "No new trades were added.",
+                )
+                return
+
+            # 2. Safety Layer: Clean, senior-friendly confirmation prompt
+            dates = [r[6][:10] for r in records_to_insert if r[6]]
+            date_span = f" (Date Range: {min(dates)} to {max(dates)})" if dates else ""
+
+            if dupes > 0:
+                confirm_text = (
+                    f"{new_count} trade(s){date_span} will be added to account '{target_name}'.\n"
+                    f"({dupes} duplicate trade(s) will be skipped)\n\n"
+                    "Are you sure you want to proceed?"
+                )
+            else:
+                confirm_text = (
+                    f"{new_count} trade(s){date_span} will be added to account '{target_name}'.\n\n"
+                    "Are you sure you want to proceed?"
+                )
+
+            reply = QMessageBox.question(
+                self,
+                "Confirm Trade Import",
+                confirm_text,
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes,
+            )
+
+            if reply != QMessageBox.Yes:
+                return
+
+            # 3. User confirmed: commit batch insert to database
+            inserted = commit_tradebook_records(records_to_insert, self.db_conn)
 
             # Display Status Banner
             self.status_card.setVisible(True)

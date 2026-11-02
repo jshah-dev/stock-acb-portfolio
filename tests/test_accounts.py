@@ -9,6 +9,7 @@ from portfolio_tracker.db import (
     get_accounts,
     init_db,
     insert_manual_transaction,
+    update_account,
 )
 
 
@@ -89,4 +90,62 @@ def test_cannot_delete_last_remaining_account(db_conn):
     # Attempting to delete the last account must raise ValueError
     with pytest.raises(ValueError, match="Cannot delete the only remaining account"):
         delete_account(db_conn, "ZERODHA_SELF")
+
+
+def test_update_account(db_conn):
+    """Verify updating account ID and description, including transaction foreign key cascade."""
+    # 1. Update display name & broker for existing account
+    update_account(
+        db_conn,
+        old_account_id="ZERODHA_SELF",
+        new_account_id="ZERODHA_SELF",
+        new_user_name="Primary Trader (Self)",
+        new_broker="Groww",
+    )
+    accounts = {a["account_id"]: a for a in get_accounts(db_conn)}
+    assert accounts["ZERODHA_SELF"]["user_name"] == "Primary Trader (Self)"
+    assert accounts["ZERODHA_SELF"]["broker"] == "Groww"
+
+    # 2. Add a transaction under ZERODHA_SELF
+    trade_id = insert_manual_transaction(
+        db_conn,
+        account_id="ZERODHA_SELF",
+        symbol="INFY",
+        transaction_type="BUY",
+        quantity=50,
+        price=1400.0,
+        trade_date="2026-01-10 10:00:00",
+    )
+    assert get_account_transaction_count(db_conn, "ZERODHA_SELF") == 1
+
+    # 3. Rename Account ID: ZERODHA_SELF -> MASTER_PORTFOLIO
+    update_account(
+        db_conn,
+        old_account_id="ZERODHA_SELF",
+        new_account_id="MASTER_PORTFOLIO",
+        new_user_name="Master Portfolio",
+        new_broker="Zerodha",
+    )
+
+    # Old ID should not exist
+    all_accounts = {a["account_id"]: a for a in get_accounts(db_conn)}
+    assert "ZERODHA_SELF" not in all_accounts
+    assert "MASTER_PORTFOLIO" in all_accounts
+    assert all_accounts["MASTER_PORTFOLIO"]["user_name"] == "Master Portfolio"
+
+    # Transactions should now be pointed to MASTER_PORTFOLIO
+    assert get_account_transaction_count(db_conn, "MASTER_PORTFOLIO") == 1
+    tx_row = db_conn.execute("SELECT account_id FROM transactions WHERE trade_id = ?;", (trade_id,)).fetchone()
+    assert tx_row[0] == "MASTER_PORTFOLIO"
+
+    # 4. Error validations
+    with pytest.raises(ValueError, match="already in use"):
+        update_account(db_conn, "MASTER_PORTFOLIO", "ZERODHA_DAD", "Duplicate Name")
+
+    with pytest.raises(ValueError, match="does not exist"):
+        update_account(db_conn, "NON_EXISTENT", "NEW_NAME", "Desc")
+
+    with pytest.raises(ValueError, match="Display Name / Description cannot be empty"):
+        update_account(db_conn, "MASTER_PORTFOLIO", "MASTER_PORTFOLIO", "   ")
+
 

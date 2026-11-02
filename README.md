@@ -43,15 +43,22 @@ Companies periodically undergo rebranding, mergers, demergers, or ticker changes
 ### 3. Multi-Account Family Ledger
 - Consolidate multiple family members and demat accounts (Self, Spouse, HUF, Parents, Kids).
 - Seamlessly switch between the **Consolidated Family View** (pooled holdings) and individual account tabs with a single click.
+- **Account Management & Post-Registration Editing:** Safely add, delete, or edit account IDs and Display Names post-registration. Renaming an Account ID automatically and transactionally cascades across all linked historical trades.
 
 ### 4. Zerodha Tradebook Ingestion (100% Offline)
 - Direct drag-and-drop or file upload for Zerodha tradebook exports (`.xlsx` and `.csv`).
 - Smart header detection automatically skips metadata banner rows.
 - Idempotent SHA-256 transaction fingerprinting ensures duplicate files or overlapping trade date ranges can be uploaded safely without double-counting.
+- **Pre-Ingestion Confirmation Safety Layer:** Once parsing is complete, the application prompts the user with a clean, concise confirmation dialog displaying the exact number of trades and date range that will be added to the destination account before writing to the database. If the user cancels, the file remains loaded to allow changing accounts with zero friction.
 
-### 5. Manual Trade & Corporate Adjustment Entry
+### 5. Manual Trade Entry & Trade Editing (Splits, Bonuses, Corrections)
 - Record off-market transfers, IPO allotments, bonus issues, stock splits, or gift transactions with dedicated preset buttons and real-time ticker autocompletion.
-- Full trade audit dialog to review, inspect, or delete individual transactions.
+- **Bonus Shares Support (₹0.00 Price):** Bonus shares can be recorded with an execution price of **₹0.00**. Mathematically, this increases share quantity without adding acquisition cost, correctly lowering the average cost basis per share without skewing capital exposure.
+- Full "All Trades" audit dialog with instant search, auto-fitting, single trade deletion, and **Trade Editing**:
+  - Edit any transaction (quantity, price, date, type, account) to account for stock splits (e.g. 1:2) or bonus issues.
+  - Mandatory **Reason for Change** note input to document corporate action adjustments.
+  - Dedicated **Confirmation Review Tab** comparing Before vs After values side-by-side with difference highlights before applying changes.
+  - Immediately recalculates portfolio cost basis, Actual Exposure, Booked P&L, and Net Exposure upon saving.
 
 ### 6. Interactive Visualizations & Charts
 - Built with high-performance native Qt Charts (QChart).
@@ -67,6 +74,11 @@ Companies periodically undergo rebranding, mergers, demergers, or ticker changes
 ### 8. Relocatable SQLite Storage & Cloud Sync
 - Single-file SQLite database with **Write-Ahead Logging (WAL)** for ACID transactional integrity and crash resistance.
 - Change the database storage folder at any time (e.g., relocate to Google Drive, Dropbox, or OneDrive) to automatically sync your portfolio across multiple machines.
+
+### 9. Modern Native UI & Application Branding
+- Custom multi-resolution application icons configured for both macOS (`.icns` / `.png`) and Windows (`.ico`).
+- Windows taskbar AppUserModelID integration ensuring crisp desktop taskbar grouping and launcher branding.
+- Setup wizard branding with embedded installer icons.
 
 ---
 
@@ -234,10 +246,14 @@ stock-acb-portfolio/
 │       ├── charts.py               # Interactive Qt Charts (Donut, Recovery, Realized)
 │       ├── account_manager_dialog.py # Family account management dialog
 │       ├── manual_trade_dialog.py    # Manual trade entry form with autocomplete
+│       ├── edit_trade_dialog.py      # Trade edit form with Before/After confirmation tab
 │       ├── symbol_mapping_dialog.py  # Corporate action symbol renaming dialog
 │       ├── storage_settings_dialog.py# Database location and sync migration dialog
-│       └── transaction_history_dialog.py # Trade audit and deletion dialog
-├── tests/                          # 38 automated unit, integration, and UI tests
+│       └── transaction_history_dialog.py # Trade audit, editing, and deletion dialog
+├── tests/                          # 44 automated unit, integration, and UI tests
+├── app_icon.ico                    # Windows icon resource (16x16, 32x32, 48x48, 256x256)
+├── app_icon.icns                   # macOS icon bundle
+├── app_icon.png                    # High-res 512x512 application brand icon
 ├── build.bat                       # Windows native PyInstaller packaging script
 ├── build_windows.sh                # Shell script to build Windows .exe on Mac/Linux/WSL
 ├── installer.iss                   # Inno Setup 6 installer specification

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import sqlite3
+from pathlib import Path
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -30,6 +32,12 @@ class MainWindow(QMainWindow):
         self.db_conn = db_conn
         self.setWindowTitle("Stock ACB Portfolio Tracker")
         self.setMinimumSize(1100, 750)
+
+        # Set window icon
+        icon_path = Path(__file__).parent / "assets" / "icon.png"
+        if icon_path.is_file():
+            self.setWindowIcon(QIcon(str(icon_path)))
+
         self._init_ui()
 
     def _init_ui(self):

@@ -22,13 +22,15 @@ from PySide6.QtWidgets import (
 )
 
 from portfolio_tracker.db import delete_transaction, get_all_symbols, get_recent_transactions
+from portfolio_tracker.ui.edit_trade_dialog import EditTradeDialog
 from portfolio_tracker.ui.styles import NumericTableWidgetItem, set_style_class
 
 
 class TransactionHistoryDialog(QDialog):
-    """Audit dialog to inspect transaction history and delete individual accidental trades."""
+    """Audit dialog to inspect transaction history, edit trade details, and delete accidental trades."""
 
     transaction_deleted = Signal()
+    transaction_updated = Signal()
 
     def __init__(self, db_conn: sqlite3.Connection, account_id: str = None, parent=None):
         super().__init__(parent)
@@ -96,10 +98,18 @@ class TransactionHistoryDialog(QDialog):
         self.table.verticalHeader().setDefaultSectionSize(36)
         self.table.verticalHeader().setVisible(False)
         self.table.setSortingEnabled(True)
+        self.table.cellDoubleClicked.connect(lambda row, col: self._on_edit_selected())
         layout.addWidget(self.table)
 
         # Actions
         btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(10)
+
+        self.btn_edit = QPushButton("✏️ Edit Selected Trade")
+        set_style_class(self.btn_edit, "primary-btn")
+        self.btn_edit.clicked.connect(self._on_edit_selected)
+        btn_layout.addWidget(self.btn_edit)
+
         self.btn_delete = QPushButton("Delete Selected Transaction")
         set_style_class(self.btn_delete, "danger-btn")
         self.btn_delete.clicked.connect(self._on_delete_selected)
@@ -117,6 +127,28 @@ class TransactionHistoryDialog(QDialog):
         """Auto-fit column widths while keeping resizability intact."""
         self.table.resizeColumnsToContents()
         self.table.horizontalHeader().setStretchLastSection(True)
+
+    def _on_edit_selected(self):
+        """Open the Edit Trade dialog for the currently selected transaction."""
+        selected_rows = self.table.selectionModel().selectedRows()
+        if not selected_rows:
+            QMessageBox.information(self, "Select Trade", "Please select a transaction to edit.")
+            return
+
+        row_idx = selected_rows[0].row()
+        trade_id = self.table.item(row_idx, 0).text()
+
+        try:
+            dlg = EditTradeDialog(self.db_conn, trade_id, parent=self)
+            dlg.trade_updated.connect(self._on_trade_updated)
+            dlg.exec()
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to open trade editor:\n{e}")
+
+    def _on_trade_updated(self, trade_id: str):
+        """Handle successful trade update from EditTradeDialog."""
+        self._load_transactions()
+        self.transaction_updated.emit()
 
     def _load_transactions(self):
         """Fetch transactions from database and populate the table with numeric sorting."""

@@ -9,8 +9,11 @@ from PySide6.QtWidgets import QAbstractItemView, QApplication
 
 from portfolio_tracker.db import init_db, insert_manual_transaction
 from portfolio_tracker.ui.account_manager_dialog import AccountManagerDialog
+from portfolio_tracker.ui.edit_trade_dialog import EditTradeDialog
 from portfolio_tracker.ui.main_window import MainWindow
 from portfolio_tracker.ui.manual_trade_dialog import ManualTradeDialog
+from portfolio_tracker.ui.transaction_history_dialog import TransactionHistoryDialog
+from portfolio_tracker.ui.upload_view import UploadView
 
 
 @pytest.fixture
@@ -161,6 +164,21 @@ def test_account_manager_dialog(qapp, db_conn, monkeypatch):
     dlg._on_add_account()
 
     assert dlg.table.rowCount() == 3
+
+    # Test Edit Account button and EditAccountDialog
+    assert hasattr(dlg, "btn_edit")
+    from portfolio_tracker.ui.account_manager_dialog import EditAccountDialog
+    edit_dlg = EditAccountDialog(db_conn, "ZERODHA_SIS", "Sister's Zerodha", "Zerodha", parent=dlg)
+    edit_dlg.txt_acc_id.setText("ZERODHA_SISTER")
+    edit_dlg.txt_name.setText("Sister Main Account")
+    edit_dlg._on_save()
+
+    dlg._load_accounts()
+    acc_ids = [dlg.table.item(r, 0).text() for r in range(dlg.table.rowCount())]
+    assert "ZERODHA_SISTER" in acc_ids
+    assert "ZERODHA_SIS" not in acc_ids
+
+    edit_dlg.close()
     dlg.close()
 
 
@@ -207,6 +225,17 @@ def test_manual_trade_dialog(qapp, db_conn, monkeypatch):
 
     dlg.btn_preset_bonus.click()
     assert dlg.combo_notes.currentText() == "Bonus/Split"
+    assert dlg.txt_price.text() == "0.00"
+
+    # Test saving bonus trade with ₹0.00
+    dlg.txt_symbol.setText("INFY")
+    dlg.txt_qty.setText("50")
+    dlg._on_save()
+    row_bonus = db_conn.execute("SELECT quantity, price, notes FROM transactions WHERE symbol = 'INFY';").fetchone()
+    assert row_bonus is not None
+    assert row_bonus[0] == 50
+    assert row_bonus[1] == 0.0
+    assert row_bonus[2] == "Bonus/Split"
 
     # Test free text
     dlg.combo_notes.setEditText("Off-market DP transfer")
@@ -440,4 +469,179 @@ def test_table_sorting_and_interactive_resizing(qapp, db_conn):
 
     dlg.close()
     win.close()
+
+
+def test_edit_trade_dialog_and_confirmation(qapp, db_conn, monkeypatch):
+    """Verify EditTradeDialog inputs, mandatory note validation, confirmation tab comparison, and DB update."""
+    from PySide6.QtWidgets import QMessageBox
+
+    monkeypatch.setattr(QMessageBox, "information", lambda *args, **kwargs: QMessageBox.Ok)
+    monkeypatch.setattr(QMessageBox, "warning", lambda *args, **kwargs: QMessageBox.Ok)
+    monkeypatch.setattr(QMessageBox, "critical", lambda *args, **kwargs: QMessageBox.Ok)
+
+    # 1. Insert starter trade
+    trade_id = insert_manual_transaction(
+        db_conn, "ZERODHA_SELF", "RELIANCE", "BUY", 50, 2400.0, "2024-01-15 10:00:00", notes="Initial buy"
+    )
+
+    # 2. Open EditTradeDialog
+    dlg = EditTradeDialog(db_conn, trade_id)
+    assert dlg.tabs.count() == 2
+    assert dlg.tabs.currentIndex() == 0
+    assert dlg.txt_symbol.text() == "RELIANCE"
+    assert dlg.txt_qty.text() == "50"
+    assert "2400" in dlg.txt_price.text()
+
+    # 3. Test mandatory note validation: empty note should block advancing to confirmation tab
+    dlg.combo_notes.setEditText("")
+    dlg.btn_next.click()
+    assert dlg.tabs.currentIndex() == 0  # Stayed on tab 0
+
+    # 4. Use preset button
+    dlg.combo_notes.setEditText("Stock Split adjustment")
+    assert dlg.combo_notes.currentText() == "Stock Split adjustment"
+
+    # 5. Modify quantity and price for a 1:2 split (shares double 50 -> 100, price halves 2400 -> 1200)
+    dlg.txt_qty.setText("100")
+    dlg.txt_price.setText("1200.00")
+
+    # 6. Click Next: should advance to Confirmation tab (Tab 1)
+    dlg.btn_next.click()
+    assert dlg.tabs.currentIndex() == 1
+
+    # Check comparison table rows
+    assert dlg.table_compare.rowCount() >= 6
+    labels = [dlg.table_compare.item(r, 0).text() for r in range(dlg.table_compare.rowCount())]
+    assert "Quantity (Shares)" in labels
+    qty_row = labels.index("Quantity (Shares)")
+    assert dlg.table_compare.item(qty_row, 1).text() == "50"
+    assert dlg.table_compare.item(qty_row, 2).text() == "100"
+    assert "+50 shares" in dlg.table_compare.item(qty_row, 3).text()
+
+    # Check Reason note callout
+    assert "Stock Split adjustment" in dlg.lbl_confirm_reason.text()
+
+    # 7. Test Back to Edit button
+    dlg.btn_back.click()
+    assert dlg.tabs.currentIndex() == 0
+
+    # Advance back to confirmation
+    dlg.btn_next.click()
+    assert dlg.tabs.currentIndex() == 1
+
+    # 8. Confirm & Save changes
+    updated_signal = []
+    dlg.trade_updated.connect(lambda tid: updated_signal.append(tid))
+    dlg._save_changes()
+
+    assert updated_signal == [trade_id]
+
+    # Verify database was updated
+    row = db_conn.execute("SELECT quantity, price, notes FROM transactions WHERE trade_id = ?;", (trade_id,)).fetchone()
+    assert row[0] == 100
+    assert row[1] == 1200.0
+    assert row[2] == "Stock Split adjustment"
+
+    dlg.close()
+
+    # 9. Test TransactionHistoryDialog edit button
+    audit_dlg = TransactionHistoryDialog(db_conn)
+    assert hasattr(audit_dlg, "btn_edit")
+    assert audit_dlg.btn_edit.property("class") == "primary-btn"
+
+    # Clicking edit without selection shows message
+    audit_dlg.btn_edit.click()
+
+    # Select the row and trigger edit
+    audit_dlg.table.selectRow(0)
+    # Monkeypatch EditTradeDialog.exec so it simulates a successful edit without hanging
+    edit_opened = []
+    def fake_exec(self):
+        edit_opened.append(self.trade_id)
+        self.trade_updated.emit(self.trade_id)
+        return 1
+
+    monkeypatch.setattr(EditTradeDialog, "exec", fake_exec)
+
+    audit_signal = []
+    audit_dlg.transaction_updated.connect(lambda: audit_signal.append(True))
+    audit_dlg._on_edit_selected()
+
+    assert edit_opened == [trade_id]
+    assert len(audit_signal) == 1
+
+    audit_dlg.close()
+
+
+def test_upload_view_confirmation_safety_layer(qapp, db_conn, tmp_path, monkeypatch):
+    """Verify UploadView confirms 'X trades will be added to Y account' before committing."""
+    from PySide6.QtWidgets import QMessageBox
+
+    csv_path = tmp_path / "confirm_trades.csv"
+    csv_path.write_text(
+        "Trade Date,TradingSymbol,Trade Type,Quantity,Price,Trade ID\n"
+        "2026-01-10 10:15:00,INFY,BUY,100,1500.50,CONF1001\n"
+        "2026-01-12 11:30:00,TCS,BUY,50,3400.00,CONF1002\n",
+        encoding="utf-8",
+    )
+
+    uv = UploadView(db_conn)
+    uv.show()
+    uv._set_selected_file(str(csv_path))
+    assert uv.btn_import.isEnabled() is True
+
+    # Scenario 1: User says "No" to confirmation
+    questions_asked = []
+    def mock_question(parent, title, text, buttons, default):
+        questions_asked.append((title, text))
+        return QMessageBox.No
+
+    monkeypatch.setattr(QMessageBox, "question", mock_question)
+    monkeypatch.setattr(QMessageBox, "information", lambda *args, **kwargs: QMessageBox.Ok)
+    monkeypatch.setattr(QMessageBox, "warning", lambda *args, **kwargs: QMessageBox.Ok)
+
+    uv._start_import()
+
+    # Verify confirmation was requested with '2' trades and target account
+    assert len(questions_asked) == 1
+    title, text = questions_asked[0]
+    assert "Confirm Trade Import" in title
+    assert "2" in text
+    assert "will be added to account" in text
+
+    # DB should have 0 transactions because user declined
+    count = db_conn.execute("SELECT COUNT(*) FROM transactions;").fetchone()[0]
+    assert count == 0
+    # File is still selected so user doesn't have to re-browse
+    assert uv.selected_file_path == str(csv_path)
+
+    # Scenario 2: User says "Yes" to confirmation
+    monkeypatch.setattr(QMessageBox, "question", lambda parent, title, text, buttons, default: QMessageBox.Yes)
+
+    signals = []
+    uv.import_completed.connect(lambda: signals.append(True))
+
+    uv._start_import()
+
+    # DB now has 2 transactions
+    count_after = db_conn.execute("SELECT COUNT(*) FROM transactions;").fetchone()[0]
+    assert count_after == 2
+    assert len(signals) == 1
+    assert uv.status_card.isVisible() is True
+    assert "2 new transactions inserted" in uv.lbl_status_detail.text()
+
+    # Scenario 3: User tries to re-import the same file (all duplicates)
+    info_shown = []
+    monkeypatch.setattr(QMessageBox, "information", lambda parent, title, text: info_shown.append((title, text)))
+    uv._set_selected_file(str(csv_path))
+    uv._start_import()
+
+    # Should show "All Trades Already Imported" and not ask confirmation to add 0 trades
+    assert any("Already Imported" in item[0] for item in info_shown)
+    count_final = db_conn.execute("SELECT COUNT(*) FROM transactions;").fetchone()[0]
+    assert count_final == 2  # No duplicates inserted
+
+    uv.close()
+
+
 

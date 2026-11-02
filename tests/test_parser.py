@@ -7,7 +7,12 @@ import pandas as pd
 import pytest
 
 from portfolio_tracker.db import init_db
-from portfolio_tracker.parser import detect_header_row, parse_tradebook
+from portfolio_tracker.parser import (
+    commit_tradebook_records,
+    detect_header_row,
+    extract_tradebook_records,
+    parse_tradebook,
+)
 
 
 @pytest.fixture
@@ -173,5 +178,28 @@ def test_real_zerodha_tradebook_file(db_conn):
     assert total2 == 78
     assert inserted2 == 0
     assert dupes2 == 78
+
+
+def test_extract_and_commit_tradebook_records(tmp_path, db_conn):
+    """Verify 2-phase parsing and insertion for user confirmation workflows."""
+    csv_file = tmp_path / "two_phase_trades.csv"
+    create_sample_csv(csv_file, metadata_rows_count=1, include_trade_id=True)
+
+    records_to_insert, dupes, total = extract_tradebook_records(csv_file, "ZERODHA_SELF", db_conn)
+    assert total == 5
+    assert len(records_to_insert) == 5
+    assert dupes == 0
+
+    # Before commit, database transactions table should be empty
+    count_before = db_conn.execute("SELECT COUNT(*) FROM transactions;").fetchone()[0]
+    assert count_before == 0
+
+    # Commit records
+    inserted = commit_tradebook_records(records_to_insert, db_conn)
+    assert inserted == 5
+
+    count_after = db_conn.execute("SELECT COUNT(*) FROM transactions;").fetchone()[0]
+    assert count_after == 5
+
 
 

@@ -23,3 +23,11 @@ def clean_qt_events(qapp):
     qapp.processEvents()
     qapp.sendPostedEvents()
 
+
+def pytest_sessionfinish(session, exitstatus):
+    """Gracefully terminate process to prevent Python 3.15 / Qt C++ destructor race."""
+    import os
+    if exitstatus == 0:
+        os._exit(0)
+
+

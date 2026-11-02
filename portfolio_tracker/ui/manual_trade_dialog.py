@@ -106,8 +106,8 @@ class ManualTradeDialog(QDialog):
 
         # 5. Price (Pure number input with decimal validation, no up/down stepper arrows)
         self.txt_price = QLineEdit()
-        self.txt_price.setPlaceholderText("e.g. 100.00")
-        price_val = QDoubleValidator(0.01, 10_000_000.0, 2, self)
+        self.txt_price.setPlaceholderText("e.g. 100.00 (or 0 for bonus)")
+        price_val = QDoubleValidator(0.00, 10_000_000.0, 2, self)
         price_val.setNotation(QDoubleValidator.StandardNotation)
         self.txt_price.setValidator(price_val)
         self.txt_price.setText("100.00")
@@ -149,12 +149,19 @@ class ManualTradeDialog(QDialog):
         self.btn_preset_ipo.clicked.connect(lambda: self.combo_notes.setCurrentText("IPO"))
         preset_layout.addWidget(self.btn_preset_ipo)
 
+        def _apply_bonus_preset():
+            self.combo_notes.setCurrentText("Bonus/Split")
+            self.txt_price.setText("0.00")
+            idx = self.combo_type.findData("BUY")
+            if idx >= 0:
+                self.combo_type.setCurrentIndex(idx)
+
         self.btn_preset_bonus = QPushButton("Bonus/Split")
         self.btn_preset_bonus.setStyleSheet(
             "font-size: 11px; font-weight: 600; padding: 2px 10px; border-radius: 4px; "
             "background-color: #F1F5F9; border: 1px solid #CBD5E1; color: #1E293B; min-height: 20px;"
         )
-        self.btn_preset_bonus.clicked.connect(lambda: self.combo_notes.setCurrentText("Bonus/Split"))
+        self.btn_preset_bonus.clicked.connect(_apply_bonus_preset)
         preset_layout.addWidget(self.btn_preset_bonus)
         preset_layout.addStretch()
         notes_box.addLayout(preset_layout)
@@ -247,10 +254,10 @@ class ManualTradeDialog(QDialog):
         try:
             price_str = self.txt_price.text().strip().replace("₹", "").strip()
             price = float(price_str)
-            if price <= 0:
+            if price < 0:
                 raise ValueError()
         except Exception:
-            QMessageBox.warning(self, "Invalid Price", "Please enter a valid positive price amount (e.g. 150.50).")
+            QMessageBox.warning(self, "Invalid Price", "Please enter a non-negative execution price (₹0.00 for bonus shares or e.g. 150.50).")
             self.txt_price.setFocus()
             return
 

@@ -58,13 +58,38 @@ def init_db(db_path_or_conn: Optional[Union[str, Path, sqlite3.Connection]] = No
                 symbol TEXT NOT NULL,
                 transaction_type TEXT NOT NULL CHECK(transaction_type IN ('BUY', 'SELL')),
                 quantity INTEGER NOT NULL CHECK(quantity > 0),
-                price REAL NOT NULL CHECK(price > 0),
+                price REAL NOT NULL CHECK(price >= 0),
                 trade_date TIMESTAMP NOT NULL,
                 notes TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (account_id) REFERENCES accounts(account_id) ON DELETE CASCADE
             );
         """)
+
+        # Migration: Relax old CHECK(price > 0) to CHECK(price >= 0) to support bonus shares (price = 0)
+        table_sql_row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='transactions';"
+        ).fetchone()
+        if table_sql_row and "price > 0" in table_sql_row[0]:
+            conn.execute("PRAGMA foreign_keys = OFF;")
+            conn.execute("""
+                CREATE TABLE transactions_migrated (
+                    trade_id TEXT PRIMARY KEY,
+                    account_id TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    transaction_type TEXT NOT NULL CHECK(transaction_type IN ('BUY', 'SELL')),
+                    quantity INTEGER NOT NULL CHECK(quantity > 0),
+                    price REAL NOT NULL CHECK(price >= 0),
+                    trade_date TIMESTAMP NOT NULL,
+                    notes TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (account_id) REFERENCES accounts(account_id) ON DELETE CASCADE
+                );
+            """)
+            conn.execute("INSERT INTO transactions_migrated SELECT * FROM transactions;")
+            conn.execute("DROP TABLE transactions;")
+            conn.execute("ALTER TABLE transactions_migrated RENAME TO transactions;")
+            conn.execute("PRAGMA foreign_keys = ON;")
 
         # 3. Query Optimization Indexes
         conn.execute("""
@@ -176,6 +201,63 @@ def add_account(
     return {"account_id": acc_id, "user_name": name, "broker": brk}
 
 
+def update_account(
+    conn: sqlite3.Connection,
+    old_account_id: str,
+    new_account_id: str,
+    new_user_name: str,
+    new_broker: str = "Zerodha",
+) -> None:
+    """Update an account's ID and display name / description.
+    
+    If account_id changes, cascades the change to all referencing transactions.
+    """
+    old_id = old_account_id.strip().upper()
+    new_id = new_account_id.strip().upper()
+    name = new_user_name.strip()
+    broker = new_broker.strip() or "Zerodha"
+
+    if not old_id:
+        raise ValueError("Old Account ID cannot be empty.")
+    if not new_id:
+        raise ValueError("New Account ID cannot be empty.")
+    if not name:
+        raise ValueError("Display Name / Description cannot be empty.")
+
+    with conn:
+        old_row = conn.execute(
+            "SELECT account_id FROM accounts WHERE UPPER(TRIM(account_id)) = ?;", (old_id,)
+        ).fetchone()
+        if not old_row:
+            raise ValueError(f"Account '{old_id}' does not exist.")
+
+        if old_id != new_id:
+            clash = conn.execute(
+                "SELECT account_id FROM accounts WHERE UPPER(TRIM(account_id)) = ?;", (new_id,)
+            ).fetchone()
+            if clash:
+                raise ValueError(f"Account ID '{new_id}' is already in use.")
+
+            # Atomic migration of account and child transactions
+            conn.execute(
+                "INSERT INTO accounts (account_id, user_name, broker) VALUES (?, ?, ?);",
+                (new_id, name, broker),
+            )
+            conn.execute(
+                "UPDATE transactions SET account_id = ? WHERE UPPER(TRIM(account_id)) = ?;",
+                (new_id, old_id),
+            )
+            conn.execute(
+                "DELETE FROM accounts WHERE UPPER(TRIM(account_id)) = ?;",
+                (old_id,),
+            )
+        else:
+            conn.execute(
+                "UPDATE accounts SET user_name = ?, broker = ? WHERE UPPER(TRIM(account_id)) = ?;",
+                (name, broker, old_id),
+            )
+
+
 def delete_account(conn: sqlite3.Connection, account_id: str) -> int:
     """Delete an account and cascade delete all its transactions.
 
@@ -225,8 +307,8 @@ def insert_manual_transaction(
         raise ValueError("Transaction type must be 'BUY' or 'SELL'.")
     if quantity <= 0:
         raise ValueError("Quantity must be greater than 0.")
-    if price <= 0:
-        raise ValueError("Price must be greater than 0.")
+    if price < 0:
+        raise ValueError("Price cannot be negative.")
     if not sym:
         raise ValueError("Symbol cannot be empty.")
 
@@ -362,6 +444,71 @@ def get_symbol_trade_count(conn: sqlite3.Connection, symbol: str) -> int:
     ).fetchone()
     return row[0] if row else 0
 
+
+
+def get_transaction(conn: sqlite3.Connection, trade_id: str) -> Optional[Dict[str, Any]]:
+    """Retrieve a single transaction with account metadata by trade_id."""
+    query = """
+        SELECT t.trade_id, t.account_id, a.user_name, t.symbol, 
+               t.transaction_type, t.quantity, t.price, t.trade_date, 
+               t.notes, t.created_at
+        FROM transactions t
+        JOIN accounts a ON t.account_id = a.account_id
+        WHERE t.trade_id = ?;
+    """
+    row = conn.execute(query, (trade_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def update_transaction(
+    conn: sqlite3.Connection,
+    trade_id: str,
+    account_id: str,
+    symbol: str,
+    transaction_type: str,
+    quantity: int,
+    price: float,
+    trade_date: Union[str, datetime],
+    notes: Optional[str] = None,
+) -> bool:
+    """Update an existing transaction (e.g. for stock split, bonus, or trade corrections)."""
+    acc_id = account_id.strip()
+    sym = symbol.strip().upper()
+    tx_type = transaction_type.strip().upper()
+
+    if tx_type not in ("BUY", "SELL"):
+        raise ValueError("Transaction type must be 'BUY' or 'SELL'.")
+    if quantity <= 0:
+        raise ValueError("Quantity must be greater than 0.")
+    if price < 0:
+        raise ValueError("Price cannot be negative.")
+    if not sym:
+        raise ValueError("Symbol cannot be empty.")
+
+    if isinstance(trade_date, datetime):
+        date_str = trade_date.strftime("%Y-%m-%d %H:%M:%S")
+    else:
+        date_str = str(trade_date).strip()
+
+    with conn:
+        cursor = conn.execute(
+            """
+            UPDATE transactions 
+            SET account_id = ?, symbol = ?, transaction_type = ?, quantity = ?, price = ?, trade_date = ?, notes = ?
+            WHERE trade_id = ?;
+            """,
+            (acc_id, sym, tx_type, quantity, price, date_str, notes, trade_id),
+        )
+        if cursor.rowcount > 0:
+            conn.execute(
+                """
+                INSERT INTO symbols (symbol, last_used) VALUES (?, CURRENT_TIMESTAMP)
+                ON CONFLICT(symbol) DO UPDATE SET last_used = CURRENT_TIMESTAMP;
+                """,
+                (sym,),
+            )
+            return True
+        return False
 
 
 def delete_transaction(conn: sqlite3.Connection, trade_id: str) -> bool:

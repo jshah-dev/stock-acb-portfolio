@@ -25,6 +25,8 @@ SolidCompression=yes
 WizardStyle=modern
 PrivilegesRequired=lowest
 DisableProgramGroupPage=yes
+SetupIconFile=app_icon.ico
+UninstallDisplayIcon={app}\{#MyAppExeName}
 
 ; Windows File Metadata
 VersionInfoCompany={#MyAppPublisher}

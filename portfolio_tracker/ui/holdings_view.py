@@ -632,6 +632,7 @@ class HoldingsView(QWidget):
         acc_id = self.combo_account.currentData()
         dlg = TransactionHistoryDialog(self.db_conn, account_id=acc_id, parent=self)
         dlg.transaction_deleted.connect(self._on_trade_modified)
+        dlg.transaction_updated.connect(self._on_trade_modified)
         dlg.exec()
 
     def _open_storage_settings(self):

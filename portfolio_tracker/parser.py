@@ -121,20 +121,20 @@ def generate_fallback_trade_id(
     return f"HASH_{digest}"
 
 
-def parse_tradebook(
+def extract_tradebook_records(
     file_path: Union[str, Path],
     account_id: str,
     db_conn: sqlite3.Connection,
-) -> Tuple[int, int, int]:
-    """Parse a Zerodha Tradebook file (CSV or Excel) and idempotently ingest transactions into the database.
+) -> Tuple[List[Tuple[Any, ...]], int, int]:
+    """Parse a Zerodha Tradebook file (CSV or Excel) and extract validated records without committing.
 
     Args:
         file_path: Path to .xlsx, .xls, or .csv file.
         account_id: Target account identifier (e.g. 'ZERODHA_DAD').
-        db_conn: Active SQLite connection.
+        db_conn: Active SQLite connection for duplicate identification.
 
     Returns:
-        Tuple of (inserted_count, duplicate_count, total_count).
+        Tuple of (records_to_insert, duplicate_count, total_count).
 
     Raises:
         ValueError: On parsing errors or missing essential columns.
@@ -195,11 +195,11 @@ def parse_tradebook(
             # Skip non-trade entries (e.g. dividends or corporate action summaries without buy/sell)
             continue
 
-        # Parse quantity and price
+        # Parse quantity and price (price >= 0 supported for bonus shares)
         try:
             qty = int(round(float(raw_qty)))
             price = float(raw_price)
-            if qty <= 0 or price <= 0:
+            if qty <= 0 or price < 0:
                 continue
         except (ValueError, TypeError):
             continue
@@ -243,30 +243,64 @@ def parse_tradebook(
             ))
             existing_ids.add(trade_id)
 
-    # 3. Transactional batch insertion
+    duplicate_count = total_valid_rows - len(records_to_insert)
+    return (records_to_insert, duplicate_count, total_valid_rows)
+
+
+def commit_tradebook_records(
+    records_to_insert: List[Tuple[Any, ...]],
+    db_conn: sqlite3.Connection,
+) -> int:
+    """Commit extracted tradebook records to SQLite in a batch transaction."""
+    if not records_to_insert:
+        return 0
+
     with db_conn:
-        if records_to_insert:
+        db_conn.executemany(
+            """
+            INSERT OR IGNORE INTO transactions 
+            (trade_id, account_id, symbol, transaction_type, quantity, price, trade_date, notes)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+            """,
+            records_to_insert,
+        )
+
+        # Record unique symbols in dedicated symbols table for recommendation engine
+        unique_syms = list({(r[2],) for r in records_to_insert if r[2]})
+        if unique_syms:
             db_conn.executemany(
                 """
-                INSERT OR IGNORE INTO transactions 
-                (trade_id, account_id, symbol, transaction_type, quantity, price, trade_date, notes)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+                INSERT INTO symbols (symbol, last_used) VALUES (?, CURRENT_TIMESTAMP)
+                ON CONFLICT(symbol) DO UPDATE SET last_used = CURRENT_TIMESTAMP;
                 """,
-                records_to_insert,
+                unique_syms,
             )
 
-            # Record unique symbols in dedicated symbols table for recommendation engine
-            unique_syms = list({(r[2],) for r in records_to_insert if r[2]})
-            if unique_syms:
-                db_conn.executemany(
-                    """
-                    INSERT INTO symbols (symbol, last_used) VALUES (?, CURRENT_TIMESTAMP)
-                    ON CONFLICT(symbol) DO UPDATE SET last_used = CURRENT_TIMESTAMP;
-                    """,
-                    unique_syms,
-                )
+    return len(records_to_insert)
 
-    inserted_count = len(records_to_insert)
-    duplicate_count = total_valid_rows - inserted_count
 
+def parse_tradebook(
+    file_path: Union[str, Path],
+    account_id: str,
+    db_conn: sqlite3.Connection,
+) -> Tuple[int, int, int]:
+    """Parse a Zerodha Tradebook file (CSV or Excel) and idempotently ingest transactions into the database.
+
+    Args:
+        file_path: Path to .xlsx, .xls, or .csv file.
+        account_id: Target account identifier (e.g. 'ZERODHA_DAD').
+        db_conn: Active SQLite connection.
+
+    Returns:
+        Tuple of (inserted_count, duplicate_count, total_count).
+
+    Raises:
+        ValueError: On parsing errors or missing essential columns.
+    """
+    records_to_insert, duplicate_count, total_valid_rows = extract_tradebook_records(
+        file_path=file_path,
+        account_id=account_id,
+        db_conn=db_conn,
+    )
+    inserted_count = commit_tradebook_records(records_to_insert, db_conn)
     return (inserted_count, duplicate_count, total_valid_rows)
