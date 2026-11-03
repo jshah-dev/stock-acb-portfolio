@@ -25,14 +25,17 @@ from PySide6.QtWidgets import (
 )
 
 from portfolio_tracker.db import (
+    delete_dividend,
     delete_pnl_adjustment,
     delete_transaction,
     get_accounts,
     get_all_symbols,
+    get_dividends,
     get_pnl_adjustments,
     get_recent_transactions,
 )
 from portfolio_tracker.ui.edit_trade_dialog import EditTradeDialog
+from portfolio_tracker.ui.manual_dividend_dialog import ManualDividendDialog
 from portfolio_tracker.ui.pnl_adjustments_dialog import PnlAdjustmentsDialog
 from portfolio_tracker.ui.styles import NumericTableWidgetItem, set_style_class
 
@@ -107,6 +110,19 @@ class TransactionHistoryDialog(QDialog):
         self.chk_show_adjustments.setChecked(self.initial_show_adjustments)
         self.chk_show_adjustments.stateChanged.connect(lambda: self._load_transactions())
         top_layout.addWidget(self.chk_show_adjustments)
+
+        # Show / Hide Dividends Toggle (Only visible when opened for an individual symbol from table)
+        self.chk_show_dividends = QCheckBox("Show Dividends")
+        self.chk_show_dividends.setToolTip("Include dividend payout transactions for this symbol")
+        self.chk_show_dividends.setChecked(False)
+        self.chk_show_dividends.stateChanged.connect(lambda: self._load_transactions())
+        top_layout.addWidget(self.chk_show_dividends)
+
+        # Visible only when opened for a specific stock symbol
+        if self.initial_search:
+            self.chk_show_dividends.setVisible(True)
+        else:
+            self.chk_show_dividends.setVisible(False)
 
         # Search Bar with Symbol Autocomplete
         self.txt_search = QLineEdit()
@@ -211,6 +227,19 @@ class TransactionHistoryDialog(QDialog):
                 dlg.exec()
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Failed to open adjustments manager:\n{e}")
+        elif entry_type == "DIVIDEND":
+            div_id = str(item_id.data(Qt.UserRole))
+            try:
+                dlg = ManualDividendDialog(
+                    self.db_conn,
+                    default_account_id=self.account_id,
+                    editing_dividend_id=div_id,
+                    parent=self,
+                )
+                dlg.dividend_saved.connect(self._on_trade_updated)
+                dlg.exec()
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to open dividend editor:\n{e}")
         else:
             trade_id = item_id.text()
             try:
@@ -245,6 +274,23 @@ class TransactionHistoryDialog(QDialog):
                         "entry_type": "ADJUSTMENT",
                         "data": a,
                         "sort_date": str(a["adjustment_date"]),
+                    })
+            except Exception:
+                pass
+
+        # 3. Fetch dividends if toggle is visible and checked
+        if (
+            hasattr(self, "chk_show_dividends")
+            and self.chk_show_dividends.isVisible()
+            and self.chk_show_dividends.isChecked()
+        ):
+            try:
+                divs = get_dividends(self.db_conn, account_id=None, symbol=self.initial_search)
+                for d in divs:
+                    combined_entries.append({
+                        "entry_type": "DIVIDEND",
+                        "data": d,
+                        "sort_date": str(d["dividend_date"]),
                     })
             except Exception:
                 pass
@@ -340,7 +386,7 @@ class TransactionHistoryDialog(QDialog):
                 it_notes.setFlags(it_notes.flags() & ~Qt.ItemIsEditable)
                 self.table.setItem(r_idx, 7, it_notes)
 
-            else:
+            elif e_type == "ADJUSTMENT":
                 # ADJUSTMENT ROW
                 a = item_data
                 adj_id_str = str(a["adjustment_id"])
@@ -433,6 +479,102 @@ class TransactionHistoryDialog(QDialog):
                 it_notes.setFlags(it_notes.flags() & ~Qt.ItemIsEditable)
                 self.table.setItem(r_idx, 7, it_notes)
 
+            elif e_type == "DIVIDEND":
+                # DIVIDEND ROW
+                d = item_data
+                div_id_str = str(d["dividend_id"])
+                it_id = NumericTableWidgetItem(div_id_str)
+                it_id.setData(Qt.UserRole, div_id_str)
+                it_id.setData(Qt.UserRole + 2, "DIVIDEND")
+                it_id.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+                it_id.setFlags(it_id.flags() & ~Qt.ItemIsEditable)
+                self.table.setItem(r_idx, 0, it_id)
+
+                # Account
+                it_acc = NumericTableWidgetItem(str(d["user_name"]))
+                it_acc.setData(Qt.UserRole, str(d["account_id"]))
+                it_acc.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+                it_acc.setFlags(it_acc.flags() & ~Qt.ItemIsEditable)
+                self.table.setItem(r_idx, 1, it_acc)
+
+                # Symbol
+                orig_sym = str(d.get("original_symbol") or d["symbol"])
+                canon_sym = str(d.get("canonical_symbol") or d["symbol"])
+                is_mapped = bool(d.get("is_mapped") and orig_sym != canon_sym)
+                sym_display = f"{orig_sym} ➔ {canon_sym}" if is_mapped else orig_sym
+
+                it_sym = NumericTableWidgetItem(sym_display)
+                it_sym.setData(Qt.UserRole, canon_sym)
+                it_sym.setData(Qt.UserRole + 1, orig_sym)
+                it_sym.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+                it_sym.setFlags(it_sym.flags() & ~Qt.ItemIsEditable)
+                self.table.setItem(r_idx, 2, it_sym)
+
+                # Type Badge (DIVIDEND)
+                it_type = NumericTableWidgetItem("DIVIDEND")
+                it_type.setTextAlignment(Qt.AlignCenter)
+                it_type.setForeground(QColor("#059669"))
+                font_type = it_type.font()
+                font_type.setBold(True)
+                it_type.setFont(font_type)
+                it_type.setFlags(it_type.flags() & ~Qt.ItemIsEditable)
+                self.table.setItem(r_idx, 3, it_type)
+
+                # Quantity (Shares on record date)
+                qty_val = float(d.get("quantity") or 0)
+                it_qty = NumericTableWidgetItem(f"{int(qty_val):,}" if qty_val > 0 else "—")
+                it_qty.setData(Qt.UserRole, qty_val)
+                it_qty.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter if qty_val > 0 else Qt.AlignCenter)
+                it_qty.setFlags(it_qty.flags() & ~Qt.ItemIsEditable)
+                self.table.setItem(r_idx, 4, it_qty)
+
+                # Price / DPS
+                dps_val = float(d.get("dividend_per_share") or 0.0)
+                amt_val = float(d.get("amount") or 0.0)
+                price_display = f"₹{dps_val:,.2f}" if dps_val > 0 else f"₹{amt_val:,.2f}"
+                it_price = NumericTableWidgetItem(price_display)
+                it_price.setData(Qt.UserRole, dps_val if dps_val > 0 else amt_val)
+                it_price.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                it_price.setForeground(QColor("#059669"))
+                font_pr = it_price.font()
+                font_pr.setBold(True)
+                it_price.setFont(font_pr)
+                it_price.setToolTip(f"Dividend: ₹{dps_val:,.2f}/share • Total Payout: ₹{amt_val:,.2f}")
+                it_price.setFlags(it_price.flags() & ~Qt.ItemIsEditable)
+                self.table.setItem(r_idx, 5, it_price)
+
+                # Date (dd-MM-yyyy format)
+                raw_d = str(d["dividend_date"])[:10]
+                if len(raw_d) == 10 and raw_d[4] == "-" and raw_d[7] == "-":
+                    date_display = f"{raw_d[8:10]}-{raw_d[5:7]}-{raw_d[0:4]}"
+                else:
+                    date_display = raw_d
+                it_date = NumericTableWidgetItem(date_display)
+                it_date.setData(Qt.UserRole, str(d["dividend_date"]))
+                it_date.setTextAlignment(Qt.AlignCenter)
+                it_date.setFlags(it_date.flags() & ~Qt.ItemIsEditable)
+                self.table.setItem(r_idx, 6, it_date)
+
+                # Notes (Total Payout + remarks)
+                rem = str(d.get("remarks") or "").strip()
+                isin_str = str(d.get("isin") or "").strip()
+                notes_parts = [f"Dividend Total: ₹{amt_val:,.2f}"]
+                if rem:
+                    notes_parts.append(rem)
+                if isin_str:
+                    notes_parts.append(f"ISIN: {isin_str}")
+                notes_text = " • ".join(notes_parts)
+                it_notes = NumericTableWidgetItem(notes_text)
+                it_notes.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+                it_notes.setFlags(it_notes.flags() & ~Qt.ItemIsEditable)
+                self.table.setItem(r_idx, 7, it_notes)
+
+                # Subtle green row tint
+                for col_idx in range(8):
+                    it_c = self.table.item(r_idx, col_idx)
+                    if it_c:
+                        it_c.setBackground(QColor("#F0FDF4"))
+
         self.table.setSortingEnabled(True)
         self._auto_fit_columns()
         self._filter_table()
@@ -482,7 +624,9 @@ class TransactionHistoryDialog(QDialog):
             if match:
                 visible_count += 1
 
-        entity_name = "entry/entries" if (hasattr(self, "chk_show_adjustments") and self.chk_show_adjustments.isChecked()) else "trade(s)"
+        has_adjs = hasattr(self, "chk_show_adjustments") and self.chk_show_adjustments.isChecked()
+        has_divs = hasattr(self, "chk_show_dividends") and self.chk_show_dividends.isChecked()
+        entity_name = "entry/entries" if (has_adjs or has_divs) else "trade(s)"
         if visible_count == total_count:
             self.lbl_count.setText(f"{total_count:,} {entity_name}")
         else:
@@ -529,6 +673,39 @@ class TransactionHistoryDialog(QDialog):
                     QMessageBox.information(self, "Deleted", "P&L adjustment deleted successfully.")
                 else:
                     QMessageBox.critical(self, "Error", "Could not delete adjustment.")
+        elif entry_type == "DIVIDEND":
+            div_id = str(item_id.data(Qt.UserRole))
+            sym = self.table.item(row_idx, 2).text()
+            price_val = self.table.item(row_idx, 5).text()
+            date_val = self.table.item(row_idx, 6).text()
+            notes_val = self.table.item(row_idx, 7).text()
+
+            msg = (
+                f"Are you sure you want to delete this dividend transaction?\n\n"
+                f"Dividend ID: {div_id}\n"
+                f"Symbol: {sym}\n"
+                f"Rate / Payout: {price_val}\n"
+                f"Date: {date_val}\n"
+                f"Details: {notes_val}\n\n"
+                "This will update your dividend records immediately."
+            )
+
+            reply = QMessageBox.question(
+                self,
+                "Confirm Dividend Deletion",
+                msg,
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+
+            if reply == QMessageBox.Yes:
+                success = delete_dividend(self.db_conn, div_id)
+                if success:
+                    self._load_transactions()
+                    self.transaction_deleted.emit()
+                    QMessageBox.information(self, "Deleted", "Dividend record deleted successfully.")
+                else:
+                    QMessageBox.critical(self, "Error", "Could not delete dividend.")
         else:
             trade_id = item_id.text()
             symbol = self.table.item(row_idx, 2).text()

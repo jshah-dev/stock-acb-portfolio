@@ -19,7 +19,9 @@ from PySide6.QtWidgets import (
 )
 
 from portfolio_tracker.config import get_active_db_path
+from portfolio_tracker.ui.dividends_dashboard_view import DividendsDashboardView
 from portfolio_tracker.ui.holdings_view import HoldingsView
+from portfolio_tracker.ui.import_dividends_view import ImportDividendsView
 from portfolio_tracker.ui.styles import set_style_class
 from portfolio_tracker.ui.upload_view import UploadView
 
@@ -140,12 +142,23 @@ class MainWindow(QMainWindow):
         self.upload_view = UploadView(self.db_conn, self)
         self.tabs.addTab(self.upload_view, "Import Tradebook")
 
+        # Tab 3: Dividends Dashboard
+        self.dividends_dashboard_view = DividendsDashboardView(self.db_conn, self)
+        self.tabs.addTab(self.dividends_dashboard_view, "Dividends Dashboard")
+
+        # Tab 4: Import Dividends
+        self.import_dividends_view = ImportDividendsView(self.db_conn, self)
+        self.tabs.addTab(self.import_dividends_view, "Import Dividends")
+
         main_layout.addWidget(self.tabs, 1)
         self.setCentralWidget(central_widget)
 
         # Cross-View Signals Wiring
         self.upload_view.import_completed.connect(self._on_import_done)
-        self.holdings_view.data_changed.connect(self.upload_view.refresh_accounts)
+        self.import_dividends_view.import_completed.connect(self._on_dividend_import_done)
+        self.holdings_view.data_changed.connect(self._on_holdings_data_changed)
+        self.dividends_dashboard_view.data_changed.connect(self._on_dividends_data_changed)
+
         self.upload_view.date_filter.dateChanged.connect(self.holdings_view.date_cutoff.setDate)
         self.holdings_view.date_cutoff.dateChanged.connect(self.upload_view.date_filter.setDate)
 
@@ -164,6 +177,19 @@ class MainWindow(QMainWindow):
         """When an import completes on the Upload tab, refresh the dashboard and switch to it."""
         self.holdings_view.refresh_data()
         self.tabs.setCurrentIndex(0)
+
+    def _on_dividend_import_done(self):
+        """When a dividend import completes, refresh the dividends dashboard and switch to it."""
+        self.dividends_dashboard_view.refresh_data()
+        self.tabs.setCurrentIndex(2)
+
+    def _on_holdings_data_changed(self):
+        self.upload_view.refresh_accounts()
+        self.dividends_dashboard_view.refresh_accounts()
+        self.import_dividends_view.refresh_accounts()
+
+    def _on_dividends_data_changed(self):
+        self.import_dividends_view.refresh_accounts()
 
     def closeEvent(self, event):
         """Clean shutdown handler ensuring zero orphan background processes or locks."""

@@ -138,7 +138,7 @@ class HoldingsView(QWidget):
         self.date_cutoff.setDate(QDate.currentDate())
         self.date_cutoff.setCalendarPopup(True)
         configure_modern_calendar(self.date_cutoff.calendarWidget())
-        self.date_cutoff.setDisplayFormat("yyyy-MM-dd")
+        self.date_cutoff.setDisplayFormat("dd-MM-yyyy")
         self.date_cutoff.setMinimumWidth(120)
         self.date_cutoff.setToolTip("Filter portfolio holdings and transactions up to this date")
         self.date_cutoff.dateChanged.connect(self.refresh_data)
@@ -152,6 +152,15 @@ class HoldingsView(QWidget):
         self.chk_closed.setToolTip("Display completely exited stock positions and their realized P&L")
         self.chk_closed.stateChanged.connect(self.refresh_data)
         row1_layout.addWidget(self.chk_closed)
+
+        row1_layout.addSpacing(4)
+
+        # Include Dividends Toggle (Opt-in)
+        self.chk_include_dividends = QCheckBox("Include Dividends")
+        self.chk_include_dividends.setChecked(False)
+        self.chk_include_dividends.setToolTip("Include dividend income to offset risk and display total dividends in summary")
+        self.chk_include_dividends.stateChanged.connect(self.refresh_data)
+        row1_layout.addWidget(self.chk_include_dividends)
 
         row1_layout.addStretch()
 
@@ -209,11 +218,16 @@ class HoldingsView(QWidget):
         self.card_extracted = self._create_kpi_card("Total Booked Profit", "₹0.00", "Realized profits from sales across portfolio")
         kpi_layout.addWidget(self.card_extracted)
 
-        # Card 3: Active Holdings
+        # Card 3: Total Dividends (Visible when Include Dividends is checked)
+        self.card_dividends = self._create_kpi_card("Total Dividends", "₹0.00", "Total dividends received up to selected date")
+        kpi_layout.addWidget(self.card_dividends)
+        self.card_dividends.setVisible(False)
+
+        # Card 4: Active Holdings
         self.card_stocks = self._create_kpi_card("Active Holdings", "0 Stocks", "0 risk-free positions (ACB ₹0)")
         kpi_layout.addWidget(self.card_stocks)
 
-        # Card 4: Closed Positions PnL
+        # Card 5: Closed Positions PnL
         self.card_closed = self._create_kpi_card("Closed Positions Profit", "₹0.00", "0 exited positions")
         kpi_layout.addWidget(self.card_closed)
 
@@ -245,9 +259,9 @@ class HoldingsView(QWidget):
 
         tbl_hdr.addStretch()
 
-        lbl_legend = QLabel("Identity: Actual Exposure - Booked P&L = Net Exposure")
-        lbl_legend.setStyleSheet("color: #64748B; font-size: 12px; font-weight: 500;")
-        tbl_hdr.addWidget(lbl_legend)
+        self.lbl_legend = QLabel("Identity: Actual Exposure - Booked P&L = Net Exposure")
+        self.lbl_legend.setStyleSheet("color: #64748B; font-size: 12px; font-weight: 500;")
+        tbl_hdr.addWidget(self.lbl_legend)
         tbl_hdr.addSpacing(10)
 
         self.txt_search_holdings = QLineEdit()
@@ -274,7 +288,7 @@ class HoldingsView(QWidget):
 
         table_layout.addLayout(tbl_hdr)
 
-        self.table = QTableWidget(0, 9)
+        self.table = QTableWidget(0, 10)
         self.table.setHorizontalHeaderLabels([
             "Stock Symbol",
             "Shares Held",
@@ -282,6 +296,7 @@ class HoldingsView(QWidget):
             "Total Proceeds (₹)",
             "Actual Exposure (₹)",
             "Booked P&L (₹)",
+            "Dividends (₹)",
             "Net Exposure (₹)",
             "Effective Avg Price (₹)",
             "Status / Flag",
@@ -298,7 +313,8 @@ class HoldingsView(QWidget):
             "Total revenue received from selling shares (Σ Sell Qty × Price).",
             "Original purchase cost of currently held shares (Shares Held × Avg Buy Price).",
             "Realized profit or loss booked from sales so far. (+) Green = Profit, (-) Red = Loss.",
-            "Adjusted Cost Basis (ACB): Actual Exposure minus Booked P&L. When ₹0.00, position is completely Risk Free (House Money)!",
+            "Total dividends received for this stock. Deducted from risk when 'Include Dividends in Risk' is checked.",
+            "Adjusted Cost Basis (ACB): Actual Exposure minus Booked P&L (and Dividends if enabled). When ₹0.00, position is completely Risk Free (House Money)!",
             "Effective cost per share after profit offsets (Net Exposure / Shares Held). ₹0.00 indicates zero downside risk.",
             "Position status: Active Holding, Risk Free (House Money), Closed, or Anomalous.",
         ]
@@ -313,9 +329,13 @@ class HoldingsView(QWidget):
         self.table.setColumnWidth(3, 130)
         self.table.setColumnWidth(4, 140)
         self.table.setColumnWidth(5, 140)
-        self.table.setColumnWidth(6, 140)
-        self.table.setColumnWidth(7, 160)
-        self.table.setColumnWidth(8, 170)
+        self.table.setColumnWidth(6, 130)
+        self.table.setColumnWidth(7, 140)
+        self.table.setColumnWidth(8, 160)
+        self.table.setColumnWidth(9, 170)
+
+        # Dividends column hidden by default unless Include Dividends is checked
+        self.table.setColumnHidden(6, True)
 
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -336,21 +356,45 @@ class HoldingsView(QWidget):
         main_layout.addWidget(table_container)
 
         # ----------------------------------------------------
-        # 4. Full-Width Chart View (Positioned Below Table)
+        # 4. Collapsible Analytics Chart (Closed by Default)
         # ----------------------------------------------------
-        chart_container = QFrame()
-        chart_container.setObjectName("chart_container")
-        chart_container.setStyleSheet(
+        self.btn_toggle_charts = QPushButton("▶ Show Visual Charts & Analytics (Asset Allocation & Capital Recovery)")
+        self.btn_toggle_charts.setCursor(Qt.PointingHandCursor)
+        self.btn_toggle_charts.setStyleSheet(
+            "QPushButton {"
+            "  text-align: left;"
+            "  padding: 10px 14px;"
+            "  font-size: 13px;"
+            "  font-weight: 700;"
+            "  color: #1E293B;"
+            "  background-color: #F8FAFC;"
+            "  border: 1px solid #CBD5E1;"
+            "  border-radius: 8px;"
+            "}"
+            "QPushButton:hover {"
+            "  background-color: #F1F5F9;"
+            "  color: #2563EB;"
+            "  border-color: #94A3B8;"
+            "}"
+        )
+        self.btn_toggle_charts.clicked.connect(self._toggle_charts)
+        main_layout.addWidget(self.btn_toggle_charts)
+
+        self.chart_body = QFrame()
+        self.chart_body.setObjectName("chart_container")
+        self.chart_body.setStyleSheet(
             "QFrame#chart_container { background-color: #FFFFFF; border: 1px solid #E2E8F0; border-radius: 8px; }"
         )
-        chart_container.setMinimumHeight(440)
-        chart_layout = QVBoxLayout(chart_container)
+        chart_layout = QVBoxLayout(self.chart_body)
         chart_layout.setContentsMargins(12, 12, 12, 12)
 
         self.chart_view = NativeChartView()
         chart_layout.addWidget(self.chart_view)
 
-        main_layout.addWidget(chart_container)
+        main_layout.addWidget(self.chart_body)
+
+        # Closed by default as requested
+        self.chart_body.setVisible(False)
 
         # Connect scroll area to root
         self.scroll_area.setWidget(content_widget)
@@ -408,6 +452,11 @@ class HoldingsView(QWidget):
         cutoff_qdate = self.date_cutoff.date()
         cutoff_str = f"{cutoff_qdate.year():04d}-{cutoff_qdate.month():02d}-{cutoff_qdate.day():02d} 23:59:59"
         include_closed = self.chk_closed.isChecked()
+        include_dividends = (
+            self.chk_include_dividends.isChecked()
+            if hasattr(self, "chk_include_dividends")
+            else False
+        )
 
         # Query analytical engine
         df = get_holdings(
@@ -415,6 +464,7 @@ class HoldingsView(QWidget):
             cutoff_date=cutoff_str,
             account_id=account_id,
             include_closed=include_closed,
+            include_dividends=include_dividends,
         )
         self.current_holdings_df = df
 
@@ -424,7 +474,28 @@ class HoldingsView(QWidget):
             db_conn=self.db_conn,
             account_id=account_id,
             cutoff_date=cutoff_str,
+            include_dividends=include_dividends,
         )
+
+        # Update Dividends KPI Card, Identity Legend, and Table Column
+        cutoff_display = cutoff_qdate.toString("dd-MM-yyyy")
+        if hasattr(self, "chk_include_dividends"):
+            if include_dividends:
+                total_div = summary.get("total_dividends_received", 0.0)
+                if hasattr(self, "card_dividends"):
+                    self.card_dividends.value_label.setText(f"(+) ₹{total_div:,.2f}" if total_div > 0 else "₹0.00")
+                    self.card_dividends.value_label.setStyleSheet("color: #047857;" if total_div > 0 else "color: #0F172A;")
+                    self.card_dividends.sub_label.setText(f"Total received until {cutoff_display}")
+                    self.card_dividends.setVisible(True)
+                if hasattr(self, "lbl_legend"):
+                    self.lbl_legend.setText("Identity: Actual Exposure - (Booked P&L + Dividends) = Net Exposure")
+                self.table.setColumnHidden(6, False)
+            else:
+                if hasattr(self, "card_dividends"):
+                    self.card_dividends.setVisible(False)
+                if hasattr(self, "lbl_legend"):
+                    self.lbl_legend.setText("Identity: Actual Exposure - Booked P&L = Net Exposure")
+                self.table.setColumnHidden(6, True)
 
         # Card 1: Total Net Exposure
         net_exposure_val = summary.get("total_net_exposure", summary.get("total_net_capital_at_risk", 0.0))
@@ -480,7 +551,20 @@ class HoldingsView(QWidget):
         self._populate_table(df)
 
         # Update Native Chart
+        self._last_holdings_df = df
         self.chart_view.update_data(df)
+
+    def _toggle_charts(self):
+        """Toggle visibility of the collapsible charts & analytics section."""
+        is_visible = self.chart_body.isVisible()
+        new_state = not is_visible
+        self.chart_body.setVisible(new_state)
+        if new_state:
+            self.btn_toggle_charts.setText("▼ Hide Visual Charts & Analytics")
+            if hasattr(self, "_last_holdings_df") and self._last_holdings_df is not None and not self._last_holdings_df.empty:
+                self.chart_view.update_data(self._last_holdings_df)
+        else:
+            self.btn_toggle_charts.setText("▶ Show Visual Charts & Analytics (Asset Allocation & Capital Recovery)")
 
     def _auto_fit_columns(self):
         """Auto-fit column widths to contents while keeping them interactive and resizable."""
@@ -586,7 +670,23 @@ class HoldingsView(QWidget):
             pnl_item.setFont(font_bold_pnl)
             self.table.setItem(r_idx, 5, pnl_item)
 
-            # 6. Net Exposure (Actual Exposure - Booked P&L, floored at 0.0)
+            # 6. Dividends Received
+            div_val = float(row.get("dividend_received", 0.0))
+            div_item = NumericTableWidgetItem()
+            div_item.setData(Qt.UserRole, div_val)
+            div_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            if div_val > 0:
+                div_item.setText(f"₹{div_val:,.2f}")
+                div_item.setForeground(QColor("#047857"))  # Emerald Green
+                div_item.setBackground(QColor("#DCFCE7"))  # Light green fill
+                div_item.setToolTip(f"Dividends Received: ₹{div_val:,.2f}")
+            else:
+                div_item.setText("₹0.00")
+                div_item.setForeground(QColor("#64748B"))
+                div_item.setToolTip("No dividends recorded for this stock.")
+            self.table.setItem(r_idx, 6, div_item)
+
+            # 7. Net Exposure (Actual Exposure - (Booked P&L + Dividends), floored at 0.0)
             net_exp_val = float(row.get("net_exposure", 0.0))
             net_item = NumericTableWidgetItem()
             net_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
@@ -607,7 +707,7 @@ class HoldingsView(QWidget):
                 net_item.setToolTip(
                     f"Pure House Money (Risk Free)\n"
                     f"Net Capital Exposure: ₹0.00\n"
-                    f"Actual Exposure (₹{actual_val:,.2f}) completely offset by Booked Profit (₹{pnl_val:,.2f})."
+                    f"Actual Exposure (₹{actual_val:,.2f}) completely offset by Booked Profit & Dividends."
                 )
             else:
                 net_item.setData(Qt.UserRole, net_exp_val)
@@ -615,11 +715,11 @@ class HoldingsView(QWidget):
                 net_item.setForeground(QColor("#0F172A"))
                 net_item.setToolTip(
                     f"Net Capital Exposure: ₹{net_exp_val:,.2f}\n"
-                    f"Actual Exposure (₹{actual_val:,.2f}) minus Booked P&L (₹{pnl_val:,.2f})."
+                    f"Capital at risk after profit and dividend deductions."
                 )
-            self.table.setItem(r_idx, 6, net_item)
+            self.table.setItem(r_idx, 7, net_item)
 
-            # 7. Effective Average & House Money Tooltip
+            # 8. Effective Average & House Money Tooltip
             eff_item = NumericTableWidgetItem()
             eff_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
 
@@ -648,9 +748,9 @@ class HoldingsView(QWidget):
                 eff_item.setData(Qt.UserRole, 0.0)
                 eff_item.setText("₹0.00")
 
-            self.table.setItem(r_idx, 7, eff_item)
+            self.table.setItem(r_idx, 8, eff_item)
 
-            # 8. Status Badge Column
+            # 9. Status Badge Column
             status_item = NumericTableWidgetItem()
             if row["is_anomalous"]:
                 status_item.setText("Alert: Sell > Buy (Anomalous)")
@@ -666,22 +766,22 @@ class HoldingsView(QWidget):
                 status_item.setText("Active Holding")
 
             status_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-            self.table.setItem(r_idx, 8, status_item)
+            self.table.setItem(r_idx, 9, status_item)
 
             # Ensure all cells in row are strictly read-only
-            for c in range(9):
+            for c in range(10):
                 it = self.table.item(r_idx, c)
                 if it:
                     it.setFlags(it.flags() & ~Qt.ItemIsEditable)
 
-            # Subtle background color on anomalous or risk free rows (preserve Col 5 and Col 6 badges)
+            # Subtle background color on anomalous or risk free rows (preserve Col 5, 6, and 7 badges)
             if row["is_house_money"]:
-                for c in range(9):
-                    if c not in (5, 6):
+                for c in range(10):
+                    if c not in (5, 6, 7):
                         self.table.item(r_idx, c).setBackground(QColor("#F0FDF4"))
             elif row["is_anomalous"]:
-                for c in range(9):
-                    if c not in (5, 6):
+                for c in range(10):
+                    if c not in (5, 6, 7):
                         self.table.item(r_idx, c).setBackground(QColor("#FFFBEB"))
 
         self.table.setSortingEnabled(True)
@@ -702,7 +802,7 @@ class HoldingsView(QWidget):
 
         for r in range(total_rows):
             sym_item = self.table.item(r, 0)
-            status_item = self.table.item(r, 8)
+            status_item = self.table.item(r, 9)
 
             sym = ""
             if sym_item:

@@ -36,6 +36,7 @@ from portfolio_tracker.db import (
     update_transaction,
 )
 from portfolio_tracker.ui.styles import (
+    SYSTEM_FONT,
     SYSTEM_MONO_FONT,
     NumericTableWidgetItem,
     configure_modern_calendar,
@@ -183,7 +184,7 @@ class EditTradeDialog(QDialog):
         self.date_picker = QDateEdit()
         self.date_picker.setCalendarPopup(True)
         configure_modern_calendar(self.date_picker.calendarWidget())
-        self.date_picker.setDisplayFormat("yyyy-MM-dd")
+        self.date_picker.setDisplayFormat("dd-MM-yyyy")
         form.addRow("Trade Date:", self.date_picker)
 
         # 7. Reason / Note for Change (Required)
@@ -481,7 +482,7 @@ class EditTradeDialog(QDialog):
         for r_idx, (field_label, before_val, after_val, is_changed) in enumerate(rows_data):
             # 1. Field Name
             it_field = NumericTableWidgetItem(field_label)
-            it_field.setFont(QFont("Segoe UI", 10, QFont.Bold if is_changed else QFont.Normal))
+            it_field.setFont(QFont(SYSTEM_FONT, 10, QFont.Bold if is_changed else QFont.Normal))
             it_field.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
             self.table_compare.setItem(r_idx, 0, it_field)
 
@@ -495,7 +496,7 @@ class EditTradeDialog(QDialog):
             it_after = NumericTableWidgetItem(after_val)
             it_after.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
             if is_changed:
-                it_after.setFont(QFont("Segoe UI", 10, QFont.Bold))
+                it_after.setFont(QFont(SYSTEM_FONT, 10, QFont.Bold))
                 it_after.setForeground(QColor("#0F172A"))
                 it_after.setBackground(QColor("#FEF3C7"))  # Soft warm yellow highlight
             self.table_compare.setItem(r_idx, 2, it_after)
@@ -512,7 +513,7 @@ class EditTradeDialog(QDialog):
                     status_text = "Modified"
                 it_status = NumericTableWidgetItem(status_text)
                 it_status.setForeground(QColor("#D97706"))  # Amber
-                it_status.setFont(QFont("Segoe UI", 10, QFont.Bold))
+                it_status.setFont(QFont(SYSTEM_FONT, 10, QFont.Bold))
             else:
                 it_status = NumericTableWidgetItem("Unchanged")
                 it_status.setForeground(QColor("#94A3B8"))

@@ -6,7 +6,7 @@ import os
 import shutil
 import sqlite3
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
@@ -195,7 +195,36 @@ def init_db(db_path_or_conn: Optional[Union[str, Path, sqlite3.Connection]] = No
             ON pnl_adjustments(symbol, adjustment_date);
         """)
 
-        # Backfill symbols from transactions and adjustments table if any exist
+        # 7. Dividends Table
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS dividends (
+                dividend_id TEXT PRIMARY KEY,
+                account_id TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                dividend_date TIMESTAMP NOT NULL,
+                quantity INTEGER DEFAULT 0,
+                dividend_per_share REAL DEFAULT 0.0,
+                amount REAL NOT NULL CHECK(amount >= 0),
+                isin TEXT,
+                remarks TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (account_id) REFERENCES accounts(account_id) ON DELETE CASCADE
+            );
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_dividends_account_date 
+            ON dividends(account_id, dividend_date);
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_dividends_symbol_date 
+            ON dividends(symbol, dividend_date);
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_dividends_account 
+            ON dividends(account_id);
+        """)
+
+        # Backfill symbols from transactions, adjustments, and dividends
         conn.execute("""
             INSERT OR IGNORE INTO symbols (symbol)
             SELECT DISTINCT UPPER(TRIM(symbol)) FROM transactions 
@@ -206,8 +235,13 @@ def init_db(db_path_or_conn: Optional[Union[str, Path, sqlite3.Connection]] = No
             SELECT DISTINCT UPPER(TRIM(symbol)) FROM pnl_adjustments 
             WHERE symbol IS NOT NULL AND TRIM(symbol) != '';
         """)
+        conn.execute("""
+            INSERT OR IGNORE INTO symbols (symbol)
+            SELECT DISTINCT UPPER(TRIM(symbol)) FROM dividends 
+            WHERE symbol IS NOT NULL AND TRIM(symbol) != '';
+        """)
 
-        # 7. Initial Starter Seeding
+        # 8. Initial Starter Seeding
         cursor = conn.cursor()
         cursor.execute("SELECT COUNT(*) FROM accounts;")
         count = cursor.fetchone()[0]
@@ -318,6 +352,10 @@ def update_account(
             )
             conn.execute(
                 "UPDATE pnl_adjustments SET account_id = ? WHERE UPPER(TRIM(account_id)) = ?;",
+                (new_id, old_id),
+            )
+            conn.execute(
+                "UPDATE dividends SET account_id = ? WHERE UPPER(TRIM(account_id)) = ?;",
                 (new_id, old_id),
             )
             conn.execute(
@@ -439,6 +477,9 @@ def get_all_symbols(conn: sqlite3.Connection) -> List[str]:
         WHERE symbol IS NOT NULL AND TRIM(symbol) != ''
         UNION
         SELECT DISTINCT UPPER(TRIM(symbol)) FROM pnl_adjustments 
+        WHERE symbol IS NOT NULL AND TRIM(symbol) != ''
+        UNION
+        SELECT DISTINCT UPPER(TRIM(symbol)) FROM dividends 
         WHERE symbol IS NOT NULL AND TRIM(symbol) != ''
         UNION
         SELECT source_symbol FROM symbol_mappings
@@ -898,6 +939,366 @@ def get_adjustments_summary(
         "net_adjustments": round(net_adjustments, 2),
         "adjustments_count": len(adjustments),
     }
+
+
+# --- Dividends Management & Queries ---
+
+def insert_dividend(
+    conn: sqlite3.Connection,
+    account_id: str,
+    symbol: str,
+    dividend_date: Union[str, datetime],
+    amount: float,
+    quantity: int = 0,
+    dividend_per_share: float = 0.0,
+    isin: Optional[str] = None,
+    remarks: Optional[str] = None,
+) -> str:
+    """Insert a manual dividend entry.
+
+    Returns:
+        Generated unique dividend_id.
+    """
+    acc_id = account_id.strip().upper()
+    sym = symbol.strip().upper()
+    if not acc_id:
+        raise ValueError("Account ID cannot be empty.")
+    if not sym:
+        raise ValueError("Stock symbol cannot be empty.")
+    if amount < 0:
+        raise ValueError("Dividend amount cannot be negative.")
+
+    if isinstance(dividend_date, datetime):
+        date_str = dividend_date.strftime("%Y-%m-%d %H:%M:%S")
+    else:
+        date_str = str(dividend_date).strip()
+        if len(date_str) == 10 and date_str[4] == "-" and date_str[7] == "-":
+            date_str = f"{date_str} 12:00:00"
+
+    ts_slug = datetime.now().strftime("%Y%m%d%H%M%S")
+    rand_slug = uuid.uuid4().hex[:8]
+    dividend_id = f"DIV_MANUAL_{acc_id}_{ts_slug}_{rand_slug}"
+
+    with conn:
+        conn.execute(
+            """
+            INSERT INTO dividends 
+            (dividend_id, account_id, symbol, dividend_date, quantity, dividend_per_share, amount, isin, remarks)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+            """,
+            (
+                dividend_id,
+                acc_id,
+                sym,
+                date_str,
+                int(quantity or 0),
+                float(dividend_per_share or 0.0),
+                float(amount),
+                isin.strip() if isin else None,
+                remarks.strip() if remarks else None,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO symbols (symbol, last_used) VALUES (?, CURRENT_TIMESTAMP)
+            ON CONFLICT(symbol) DO UPDATE SET last_used = CURRENT_TIMESTAMP;
+            """,
+            (sym,),
+        )
+
+    return dividend_id
+
+
+def commit_dividend_records(
+    records_to_insert: List[Tuple[Any, ...]],
+    db_conn: sqlite3.Connection,
+) -> int:
+    """Commit extracted dividend records to SQLite in a batch transaction."""
+    if not records_to_insert:
+        return 0
+
+    with db_conn:
+        db_conn.executemany(
+            """
+            INSERT OR IGNORE INTO dividends 
+            (dividend_id, account_id, symbol, dividend_date, quantity, dividend_per_share, amount, isin, remarks)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+            """,
+            records_to_insert,
+        )
+
+        unique_syms = list({(r[2],) for r in records_to_insert if r[2]})
+        if unique_syms:
+            db_conn.executemany(
+                """
+                INSERT INTO symbols (symbol, last_used) VALUES (?, CURRENT_TIMESTAMP)
+                ON CONFLICT(symbol) DO UPDATE SET last_used = CURRENT_TIMESTAMP;
+                """,
+                unique_syms,
+            )
+
+    return len(records_to_insert)
+
+
+def get_dividends(
+    conn: sqlite3.Connection,
+    account_id: Optional[str] = None,
+    symbol: Optional[str] = None,
+    start_date: Optional[Union[str, datetime]] = None,
+    end_date: Optional[Union[str, datetime]] = None,
+    limit: Optional[int] = None,
+) -> List[Dict[str, Any]]:
+    """Retrieve dividends with account metadata and canonical symbol mappings."""
+    query = """
+        SELECT d.dividend_id, d.account_id, a.user_name, 
+               d.symbol,
+               d.symbol AS original_symbol,
+               COALESCE(m.target_symbol, d.symbol) AS canonical_symbol,
+               (m.target_symbol IS NOT NULL) AS is_mapped,
+               d.dividend_date, d.quantity, d.dividend_per_share, d.amount,
+               d.isin, d.remarks, d.created_at
+        FROM dividends d
+        JOIN accounts a ON d.account_id = a.account_id
+        LEFT JOIN symbol_mappings m ON UPPER(TRIM(d.symbol)) = UPPER(TRIM(m.source_symbol))
+        WHERE 1=1
+    """
+    params: List[Any] = []
+    if account_id:
+        query += " AND d.account_id = ?"
+        params.append(account_id)
+    if symbol:
+        clean_sym = symbol.strip().upper()
+        query += " AND (UPPER(TRIM(d.symbol)) = ? OR UPPER(TRIM(m.target_symbol)) = ?)"
+        params.append(clean_sym)
+        params.append(clean_sym)
+    if start_date:
+        s_str = str(start_date).strip()
+        if len(s_str) == 10 and s_str[4] == "-" and s_str[7] == "-":
+            s_str = f"{s_str} 00:00:00"
+        query += " AND d.dividend_date >= ?"
+        params.append(s_str)
+    if end_date:
+        e_str = str(end_date).strip()
+        if len(e_str) == 10 and e_str[4] == "-" and e_str[7] == "-":
+            e_str = f"{e_str} 23:59:59"
+        query += " AND d.dividend_date <= ?"
+        params.append(e_str)
+
+    query += " ORDER BY d.dividend_date DESC, d.created_at DESC"
+    if limit is not None and limit > 0:
+        query += " LIMIT ?;"
+        params.append(limit)
+    else:
+        query += ";"
+
+    rows = conn.execute(query, params).fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_dividend(conn: sqlite3.Connection, dividend_id: str) -> Optional[Dict[str, Any]]:
+    """Retrieve a single dividend record by dividend_id."""
+    query = """
+        SELECT d.dividend_id, d.account_id, a.user_name, 
+               d.symbol,
+               d.symbol AS original_symbol,
+               COALESCE(m.target_symbol, d.symbol) AS canonical_symbol,
+               (m.target_symbol IS NOT NULL) AS is_mapped,
+               d.dividend_date, d.quantity, d.dividend_per_share, d.amount,
+               d.isin, d.remarks, d.created_at
+        FROM dividends d
+        JOIN accounts a ON d.account_id = a.account_id
+        LEFT JOIN symbol_mappings m ON UPPER(TRIM(d.symbol)) = UPPER(TRIM(m.source_symbol))
+        WHERE d.dividend_id = ?;
+    """
+    row = conn.execute(query, (dividend_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def update_dividend(
+    conn: sqlite3.Connection,
+    dividend_id: str,
+    account_id: str,
+    symbol: str,
+    dividend_date: Union[str, datetime],
+    amount: float,
+    quantity: int = 0,
+    dividend_per_share: float = 0.0,
+    isin: Optional[str] = None,
+    remarks: Optional[str] = None,
+) -> bool:
+    """Update an existing dividend record."""
+    acc_id = account_id.strip().upper()
+    sym = symbol.strip().upper()
+    if not acc_id:
+        raise ValueError("Account ID cannot be empty.")
+    if not sym:
+        raise ValueError("Stock symbol cannot be empty.")
+    if amount < 0:
+        raise ValueError("Dividend amount cannot be negative.")
+
+    if isinstance(dividend_date, datetime):
+        date_str = dividend_date.strftime("%Y-%m-%d %H:%M:%S")
+    else:
+        date_str = str(dividend_date).strip()
+        if len(date_str) == 10 and date_str[4] == "-" and date_str[7] == "-":
+            date_str = f"{date_str} 12:00:00"
+
+    with conn:
+        cursor = conn.execute(
+            """
+            UPDATE dividends 
+            SET account_id = ?, symbol = ?, dividend_date = ?, quantity = ?, dividend_per_share = ?, 
+                amount = ?, isin = ?, remarks = ?
+            WHERE dividend_id = ?;
+            """,
+            (
+                acc_id,
+                sym,
+                date_str,
+                int(quantity or 0),
+                float(dividend_per_share or 0.0),
+                float(amount),
+                isin.strip() if isin else None,
+                remarks.strip() if remarks else None,
+                dividend_id,
+            ),
+        )
+        if cursor.rowcount > 0:
+            conn.execute(
+                """
+                INSERT INTO symbols (symbol, last_used) VALUES (?, CURRENT_TIMESTAMP)
+                ON CONFLICT(symbol) DO UPDATE SET last_used = CURRENT_TIMESTAMP;
+                """,
+                (sym,),
+            )
+            return True
+        return False
+
+
+def delete_dividend(conn: sqlite3.Connection, dividend_id: str) -> bool:
+    """Delete a single dividend record by dividend_id."""
+    with conn:
+        cursor = conn.execute("DELETE FROM dividends WHERE dividend_id = ?;", (dividend_id,))
+        return cursor.rowcount > 0
+
+
+def get_dividends_summary(
+    conn: sqlite3.Connection,
+    account_id: Optional[str] = None,
+    symbol: Optional[str] = None,
+    start_date: Optional[Union[str, datetime]] = None,
+    end_date: Optional[Union[str, datetime]] = None,
+) -> Dict[str, Any]:
+    """Calculate aggregate summary of dividends (total amount, payout count, unique companies, top payer, FY breakdown)."""
+    dividends = get_dividends(
+        conn,
+        account_id=account_id,
+        symbol=symbol,
+        start_date=start_date,
+        end_date=end_date,
+    )
+
+    total_amount = sum(d["amount"] for d in dividends)
+    payout_count = len(dividends)
+    unique_companies = len({d["canonical_symbol"] for d in dividends})
+
+    # Group by canonical symbol for top payer
+    symbol_totals: Dict[str, float] = {}
+    fy_totals: Dict[str, float] = {}
+    monthly_totals: Dict[str, float] = {}
+
+    for d in dividends:
+        sym = d["canonical_symbol"]
+        amt = d["amount"]
+        symbol_totals[sym] = symbol_totals.get(sym, 0.0) + amt
+
+        # Parse date to compute Indian Financial Year (April 1 to March 31)
+        raw_dt_str = str(d["dividend_date"]).strip()[:10]
+        try:
+            dt = datetime.strptime(raw_dt_str, "%Y-%m-%d")
+            # Indian FY: month >= 4 is FY YYYY-(YY+1), else FY (YYYY-1)-YY
+            if dt.month >= 4:
+                fy_key = f"FY {dt.year}-{str(dt.year + 1)[-2:]}"
+            else:
+                fy_key = f"FY {dt.year - 1}-{str(dt.year)[-2:]}"
+            fy_totals[fy_key] = fy_totals.get(fy_key, 0.0) + amt
+
+            month_key = dt.strftime("%Y-%m")
+            monthly_totals[month_key] = monthly_totals.get(month_key, 0.0) + amt
+        except Exception:
+            pass
+
+    top_payer: Dict[str, Any] = {"symbol": "N/A", "amount": 0.0}
+    if symbol_totals:
+        top_sym = max(symbol_totals, key=symbol_totals.get)
+        top_payer = {"symbol": top_sym, "amount": round(symbol_totals[top_sym], 2)}
+
+    # Top contributors list sorted descending
+    top_contributors = sorted(
+        [{"symbol": k, "amount": round(v, 2)} for k, v in symbol_totals.items()],
+        key=lambda x: x["amount"],
+        reverse=True,
+    )
+
+    return {
+        "total_amount": round(total_amount, 2),
+        "payout_count": payout_count,
+        "unique_companies": unique_companies,
+        "top_payer": top_payer,
+        "top_contributors": top_contributors,
+        "fy_totals": {k: round(v, 2) for k, v in sorted(fy_totals.items(), reverse=True)},
+        "monthly_totals": {k: round(v, 2) for k, v in sorted(monthly_totals.items())},
+    }
+
+
+def get_all_dividends_by_symbol(
+    conn: sqlite3.Connection,
+    account_id: Optional[str] = None,
+    cutoff_date: Optional[Union[str, date, datetime]] = None,
+) -> Dict[str, float]:
+    """Return a mapping of canonical_symbol to total dividend amount received up to cutoff_date."""
+    query = """
+        SELECT UPPER(TRIM(COALESCE(m.target_symbol, d.symbol))) AS canon_sym,
+               SUM(d.amount) AS total_div
+        FROM dividends d
+        LEFT JOIN symbol_mappings m ON UPPER(TRIM(d.symbol)) = UPPER(TRIM(m.source_symbol))
+        WHERE 1=1
+    """
+    params: List[Any] = []
+    if account_id:
+        query += " AND d.account_id = ?"
+        params.append(account_id)
+    if cutoff_date:
+        cutoff_str = str(cutoff_date)[:10]
+        query += " AND d.dividend_date <= ?"
+        params.append(cutoff_str)
+
+    query += " GROUP BY canon_sym;"
+    cursor = conn.cursor()
+    cursor.execute(query, params)
+    return {row[0]: float(row[1] or 0.0) for row in cursor.fetchall() if row[0]}
+
+
+def get_dividends_total(
+    conn: sqlite3.Connection,
+    account_id: Optional[str] = None,
+    cutoff_date: Optional[Union[str, date, datetime]] = None,
+) -> float:
+    """Return the total portfolio dividend amount received up to cutoff_date."""
+    query = "SELECT SUM(amount) FROM dividends WHERE 1=1"
+    params: List[Any] = []
+    if account_id:
+        query += " AND account_id = ?"
+        params.append(account_id)
+    if cutoff_date:
+        cutoff_str = str(cutoff_date)[:10]
+        query += " AND dividend_date <= ?"
+        params.append(cutoff_str)
+
+    cursor = conn.cursor()
+    cursor.execute(query, params)
+    row = cursor.fetchone()
+    return float(row[0] or 0.0) if row and row[0] is not None else 0.0
 
 
 # --- Database Backup and Restore Utilities ---

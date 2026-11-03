@@ -9,7 +9,11 @@ from typing import Any, Dict, List, Optional, Union
 
 import pandas as pd
 
-from portfolio_tracker.db import get_adjustments_summary
+from portfolio_tracker.db import (
+    get_adjustments_summary,
+    get_all_dividends_by_symbol,
+    get_dividends_total,
+)
 
 
 def _format_cutoff_date(cutoff_date: Optional[Union[str, date, datetime]]) -> Optional[str]:
@@ -34,6 +38,7 @@ def get_holdings(
     cutoff_date: Optional[Union[str, date, datetime]] = None,
     account_id: Optional[str] = None,
     include_closed: bool = False,
+    include_dividends: bool = False,
 ) -> pd.DataFrame:
     """Calculate holdings and Adjusted Cost Basis (ACB) ledger metrics.
 
@@ -108,10 +113,18 @@ def get_holdings(
             "total_buy_qty", "total_buy_cost", "total_sell_qty", "total_proceeds",
             "avg_buy_price", "actual_exposure", "booked_pnl", "trade_booked_pnl",
             "stock_adj_pnl", "stock_carried_profit", "stock_charges",
+            "dividend_received",
             "net_exposure", "net_capital_at_risk", "effective_avg", "raw_effective_avg",
             "cash_extracted", "realized_pnl", "is_house_money", "is_closed",
             "is_anomalous", "status", "mapped_sources"
         ])
+
+    # Fetch dividends if enabled
+    dividends_by_symbol: Dict[str, float] = {}
+    if include_dividends:
+        dividends_by_symbol = get_all_dividends_by_symbol(
+            db_conn, account_id=account_id, cutoff_date=cutoff_str
+        )
 
     # Grouping key: by canonical symbol only if consolidated, by (account_id, symbol) if single account
     group_cols = ["account_id", "user_name", "symbol"] if account_id else ["symbol"]
@@ -150,6 +163,8 @@ def get_holdings(
             else 0.0
         )
 
+        symbol_div_amt = float(dividends_by_symbol.get(grp_symbol, 0.0)) if include_dividends else 0.0
+
         buy_mask = grp["transaction_type"] == "BUY"
         sell_mask = grp["transaction_type"] == "SELL"
 
@@ -174,7 +189,7 @@ def get_holdings(
             trade_booked_pnl = total_proceeds - total_buy_cost
             booked_pnl = trade_booked_pnl + stock_adj_pnl
             net_exposure = 0.0
-            net_capital_at_risk = (total_buy_cost - total_proceeds) - stock_adj_pnl
+            net_capital_at_risk = (total_buy_cost - total_proceeds) - stock_adj_pnl - (symbol_div_amt if include_dividends else 0.0)
             effective_avg: Optional[float] = 0.0
             raw_effective_avg: Optional[float] = 0.0
             cash_extracted = max(0.0, total_proceeds - total_buy_cost)
@@ -203,11 +218,14 @@ def get_holdings(
             booked_pnl = trade_booked_pnl + stock_adj_pnl
             realized_pnl = booked_pnl
 
-            # 3. Net Capital at Risk / Excess: Actual Exposure - Booked P&L
-            # Notice the core identity:
-            # When stock_adj_pnl == 0: actual_exposure - trade_booked_pnl == Total Buy Cost - Total Proceeds
-            # When stock_adj_pnl != 0: net_diff = (Total Buy Cost - Total Proceeds) - stock_adj_pnl
-            net_diff = actual_exposure - booked_pnl
+            # 3. Net Capital at Risk / Excess: Actual Exposure - (Booked P&L + Dividends if enabled)
+            # Baseline: net_diff = actual_exposure - booked_pnl
+            # With Dividends: net_diff = actual_exposure - (booked_pnl + symbol_div_amt)
+            if include_dividends:
+                net_diff = actual_exposure - (booked_pnl + symbol_div_amt)
+            else:
+                net_diff = actual_exposure - booked_pnl
+
             net_capital_at_risk = net_diff
 
             if net_diff <= 0:
@@ -242,6 +260,7 @@ def get_holdings(
             "stock_adj_pnl": round(stock_adj_pnl, 2),
             "stock_carried_profit": round(stock_carried_profit, 2),
             "stock_charges": round(stock_charges, 2),
+            "dividend_received": round(symbol_div_amt, 2),
             "booked_pnl": round(booked_pnl, 2),
             "net_exposure": round(net_exposure, 2),
             "net_capital_at_risk": round(net_capital_at_risk, 2),
@@ -256,18 +275,29 @@ def get_holdings(
             "mapped_sources": mapped_sources,
         })
 
-    # Include any closed symbols that only have adjustments from an untracked account if include_closed is True
-    if include_closed and not df_adjs.empty:
-        extra_symbols = set(df_adjs["symbol"].dropna().unique()) - seen_symbols
+    # Include any closed symbols that only have adjustments or dividends if include_closed is True
+    if include_closed:
+        extra_symbols = set()
+        if not df_adjs.empty:
+            extra_symbols.update(set(df_adjs["symbol"].dropna().unique()) - seen_symbols)
+        if include_dividends and dividends_by_symbol:
+            extra_symbols.update(set(dividends_by_symbol.keys()) - seen_symbols)
+
         for extra_sym in sorted(extra_symbols):
-            extra_adjs = df_adjs[df_adjs["symbol"] == extra_sym]
-            extra_adj_pnl = float(extra_adjs["signed_amount"].sum())
-            extra_carried = float(
-                extra_adjs.loc[extra_adjs["category"] == "CARRIED_FORWARD_PROFIT", "amount"].sum()
+            extra_adjs = df_adjs[df_adjs["symbol"] == extra_sym] if not df_adjs.empty else pd.DataFrame()
+            extra_adj_pnl = float(extra_adjs["signed_amount"].sum()) if not extra_adjs.empty else 0.0
+            extra_carried = (
+                float(extra_adjs.loc[extra_adjs["category"] == "CARRIED_FORWARD_PROFIT", "amount"].sum())
+                if not extra_adjs.empty
+                else 0.0
             )
-            extra_charges = float(
-                extra_adjs.loc[extra_adjs["category"].isin(["BROKERAGE_CHARGES", "DP_CHARGES"]), "amount"].sum()
+            extra_charges = (
+                float(extra_adjs.loc[extra_adjs["category"].isin(["BROKERAGE_CHARGES", "DP_CHARGES"]), "amount"].sum())
+                if not extra_adjs.empty
+                else 0.0
             )
+            extra_div = float(dividends_by_symbol.get(extra_sym, 0.0)) if include_dividends else 0.0
+
             records.append({
                 "symbol": extra_sym,
                 "account_id": account_id or "CONSOLIDATED",
@@ -283,6 +313,7 @@ def get_holdings(
                 "stock_adj_pnl": round(extra_adj_pnl, 2),
                 "stock_carried_profit": round(extra_carried, 2),
                 "stock_charges": round(extra_charges, 2),
+                "dividend_received": round(extra_div, 2),
                 "booked_pnl": round(extra_adj_pnl, 2),
                 "net_exposure": 0.0,
                 "net_capital_at_risk": 0.0,
@@ -313,6 +344,7 @@ def get_portfolio_summary(
     db_conn: Optional[sqlite3.Connection] = None,
     account_id: Optional[str] = None,
     cutoff_date: Optional[Union[str, date, datetime]] = None,
+    include_dividends: bool = False,
 ) -> Dict[str, Any]:
     """Compute high-level executive KPI metric card values from a holdings DataFrame and P&L adjustments."""
     total_carried_profit = 0.0
@@ -321,6 +353,7 @@ def get_portfolio_summary(
     total_dividend = 0.0
     total_net_adjustments = 0.0
     adjustments_count = 0
+    total_dividends_received = 0.0
 
     if db_conn is not None:
         try:
@@ -334,6 +367,15 @@ def get_portfolio_summary(
         except Exception:
             pass
 
+        if include_dividends:
+            try:
+                total_dividends_received = get_dividends_total(db_conn, account_id=account_id, cutoff_date=cutoff_date)
+            except Exception:
+                pass
+
+    if include_dividends and total_dividends_received == 0.0 and not holdings_df.empty and "dividend_received" in holdings_df.columns:
+        total_dividends_received = float(holdings_df["dividend_received"].sum())
+
     if holdings_df.empty:
         return {
             "total_net_exposure": 0.0,
@@ -345,6 +387,7 @@ def get_portfolio_summary(
             "total_carried_loss": total_carried_loss,
             "total_brokerage": total_brokerage,
             "total_dividend": total_dividend,
+            "total_dividends_received": round(total_dividends_received, 2),
             "total_net_adjustments": total_net_adjustments,
             "total_net_realized_pnl": round(total_net_adjustments, 2),
             "adjustments_count": adjustments_count,
@@ -407,6 +450,7 @@ def get_portfolio_summary(
         "total_carried_loss": round(total_carried_loss, 2),
         "total_brokerage": round(total_brokerage, 2),
         "total_dividend": round(total_dividend, 2),
+        "total_dividends_received": round(total_dividends_received, 2),
         "total_net_adjustments": round(total_net_adjustments, 2),
         "total_net_realized_pnl": round(total_net_realized_pnl, 2),
         "adjustments_count": adjustments_count,

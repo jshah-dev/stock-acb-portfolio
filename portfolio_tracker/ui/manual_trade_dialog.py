@@ -125,7 +125,7 @@ class ManualTradeDialog(QDialog):
         self.date_picker.setDate(QDate.currentDate())
         self.date_picker.setCalendarPopup(True)
         configure_modern_calendar(self.date_picker.calendarWidget())
-        self.date_picker.setDisplayFormat("yyyy-MM-dd")
+        self.date_picker.setDisplayFormat("dd-MM-yyyy")
         form.addRow("Trade Date:", self.date_picker)
 
         # 7. Notes with Default Options (IPO, Bonus/Split) and Free Text

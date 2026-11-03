@@ -11,6 +11,7 @@ from portfolio_tracker.db import (
     add_symbol_mapping,
     get_pnl_adjustments,
     init_db,
+    insert_dividend,
     insert_manual_transaction,
     insert_pnl_adjustment,
 )
@@ -32,11 +33,13 @@ def db_conn(tmp_path):
 
 
 def test_main_window_tabs_and_structure(qapp, db_conn):
-    """Verify MainWindow initializes with both tabs and correct branding."""
+    """Verify MainWindow initializes with 4 tabs and correct branding."""
     win = MainWindow(db_conn)
-    assert win.tabs.count() == 2
-    assert "Holdings" in win.tabs.tabText(0)
-    assert "Import" in win.tabs.tabText(1)
+    assert win.tabs.count() == 4
+    assert "Holdings Dashboard" in win.tabs.tabText(0)
+    assert "Import Tradebook" in win.tabs.tabText(1)
+    assert "Dividends Dashboard" in win.tabs.tabText(2)
+    assert "Import Dividends" in win.tabs.tabText(3)
     assert win.windowTitle() == "Stock ACB Portfolio Tracker"
 
     # Check HoldingsView initialized
@@ -75,32 +78,33 @@ def test_holdings_view_table_and_kpis(qapp, db_conn):
     assert "2 Stocks" in hv.card_stocks.value_label.text()
     assert "1 risk-free positions" in hv.card_stocks.sub_label.text()
 
-    # Verify Table rows and 9 columns
+    # Verify Table rows and 10 columns (with Dividends column hidden by default)
     assert hv.table.rowCount() == 2
-    assert hv.table.columnCount() == 9
+    assert hv.table.columnCount() == 10
+    assert hv.table.isColumnHidden(6) is True
     symbols = [hv.table.item(r, 0).text() for r in range(hv.table.rowCount())]
     assert "TCS" in symbols
     assert "INFY" in symbols
 
-    # Check house money tooltip on INFY (Col 7: Effective Avg Price)
+    # Check house money tooltip on INFY (Col 8: Effective Avg Price)
     infy_row = symbols.index("INFY")
-    infy_avg_item = hv.table.item(infy_row, 7)
+    infy_avg_item = hv.table.item(infy_row, 8)
     assert "Risk Free" in infy_avg_item.text()
     assert "Pure House Money" in infy_avg_item.toolTip()
     assert "Cash Extracted" in infy_avg_item.toolTip()
 
-    # Check INFY Col 5 Booked P&L and Col 6 Net Exposure
+    # Check INFY Col 5 Booked P&L and Col 7 Net Exposure
     infy_pnl_item = hv.table.item(infy_row, 5)
     assert "(+) ₹45,000.00" in infy_pnl_item.text()
     assert infy_pnl_item.foreground().color().name().upper() == "#047857"
     assert infy_pnl_item.background().color().name().upper() == "#DCFCE7"
 
-    infy_net_item = hv.table.item(infy_row, 6)
+    infy_net_item = hv.table.item(infy_row, 7)
     assert "Risk Free" in infy_net_item.text()
     assert infy_net_item.foreground().color().name().upper() == "#047857"
     assert infy_net_item.background().color().name().upper() == "#DCFCE7"
 
-    # Check TCS: Actual Exposure (Col 4), Booked P&L (Col 5), Net Exposure (Col 6)
+    # Check TCS: Actual Exposure (Col 4), Booked P&L (Col 5), Net Exposure (Col 7)
     tcs_row = symbols.index("TCS")
     tcs_act_item = hv.table.item(tcs_row, 4)
     assert "₹180,000.00" in tcs_act_item.text()
@@ -109,7 +113,7 @@ def test_holdings_view_table_and_kpis(qapp, db_conn):
     assert "(+) ₹20,000.00" in tcs_pnl_item.text()
     assert tcs_pnl_item.foreground().color().name().upper() == "#047857"
 
-    tcs_net_item = hv.table.item(tcs_row, 6)
+    tcs_net_item = hv.table.item(tcs_row, 7)
     assert "₹160,000.00" in tcs_net_item.text()
 
     # Verify buttons are labeled and not empty
@@ -124,7 +128,7 @@ def test_holdings_view_table_and_kpis(qapp, db_conn):
     wipro_symbols = [hv.table.item(r, 0).text() for r in range(hv.table.rowCount())]
     assert "WIPRO" in wipro_symbols
     wipro_row = wipro_symbols.index("WIPRO")
-    wipro_avg_item = hv.table.item(wipro_row, 7)
+    wipro_avg_item = hv.table.item(wipro_row, 8)
     assert wipro_avg_item.text() == "₹0.00"
     assert "nan" not in wipro_avg_item.text().lower()
 
@@ -365,47 +369,22 @@ def test_chart_hover_banner_and_calendar_years(qapp, db_conn):
 
 
 def test_segmented_chart_tabs_and_empty_return(qapp, db_conn):
-    """Verify 1-click segmented chart tabs, combo sync, and empty state return action."""
+    """Verify 1-click segmented chart tabs, Top N selector, side legend, and collapsible container."""
     import pandas as pd
     from portfolio_tracker.ui.charts import NativeChartView
+    from portfolio_tracker.ui.holdings_view import HoldingsView
 
     chart_view = NativeChartView()
 
-    # Verify 3 segmented tab buttons exist
+    # Verify segmented tab buttons: Donut and Bar (Realized Profit removed as requested)
     assert hasattr(chart_view, "btn_tab_donut")
     assert hasattr(chart_view, "btn_tab_bar")
-    assert hasattr(chart_view, "btn_tab_realized")
+    assert not hasattr(chart_view, "btn_tab_realized")
     assert hasattr(chart_view, "btn_empty_action")
-    # Dropdown is removed/hidden from user interface
-    assert chart_view.combo_mode.isHidden() is True
+    assert hasattr(chart_view, "combo_top_n")
+    assert chart_view.combo_top_n.count() == 4  # Top 5, Top 10, Top 20, Top 50
 
-    # Initial state is DONUT
-    assert chart_view.current_mode == "DONUT"
-    assert chart_view.btn_tab_donut.property("class") == "chart-tab-active"
-    assert chart_view.btn_tab_bar.property("class") == "chart-tab"
-    assert chart_view.btn_tab_realized.property("class") == "chart-tab"
-
-    # Click BAR tab
-    chart_view.btn_tab_bar.click()
-    assert chart_view.current_mode == "BAR"
-    assert chart_view.combo_mode.currentData() == "BAR"
-    assert chart_view.btn_tab_bar.property("class") == "chart-tab-active"
-    assert chart_view.btn_tab_donut.property("class") == "chart-tab"
-
-    # Click REALIZED tab
-    chart_view.btn_tab_realized.click()
-    assert chart_view.current_mode == "REALIZED"
-    assert chart_view.combo_mode.currentData() == "REALIZED"
-    assert chart_view.btn_tab_realized.property("class") == "chart-tab-active"
-
-    # Set mode via combo_mode dropdown
-    idx_donut = chart_view.combo_mode.findData("DONUT")
-    chart_view.combo_mode.setCurrentIndex(idx_donut)
-    assert chart_view.current_mode == "DONUT"
-    assert chart_view.btn_tab_donut.property("class") == "chart-tab-active"
-
-    # Empty state action return button test
-    active_only_df = pd.DataFrame([
+    sample_df = pd.DataFrame([
         {
             "symbol": "INFY",
             "quantity": 100,
@@ -417,19 +396,96 @@ def test_segmented_chart_tabs_and_empty_return(qapp, db_conn):
             "realized_pnl": 0.0,
         }
     ])
-    chart_view.update_data(active_only_df)
-    # Switch to REALIZED with 0 closed positions
-    chart_view.btn_tab_realized.click()
-    assert chart_view.stack.currentIndex() == 1  # Empty placeholder visible
-    assert not chart_view.btn_empty_action.isHidden()
-    assert "Asset Allocation" in chart_view.btn_empty_action.text()
+    chart_view.update_data(sample_df)
 
-    # Click empty action button to seamlessly return to DONUT
-    chart_view.btn_empty_action.click()
+    # Initial state is DONUT with side legend visible
     assert chart_view.current_mode == "DONUT"
-    assert chart_view.stack.currentIndex() == 0  # Chart visible again
+    assert chart_view.btn_tab_donut.property("class") == "chart-tab-active"
+    assert chart_view.btn_tab_bar.property("class") == "chart-tab"
+    assert chart_view.legend_panel.isHidden() is False
 
+    # Test with 12 distinct stocks
+    multi_stocks = []
+    for i in range(12):
+        multi_stocks.append({
+            "symbol": f"STOCK_{i}",
+            "quantity": 10,
+            "avg_buy_price": 100.0 * (i + 1),
+            "total_buy_cost": 1000.0 * (i + 1),
+            "net_capital_at_risk": 500.0 * (i + 1),
+            "is_closed": False,
+            "is_anomalous": False,
+            "realized_pnl": 0.0,
+        })
+    multi_df = pd.DataFrame(multi_stocks)
+    chart_view.update_data(multi_df)
+
+    # Test Top 5 selector (5 stocks + 1 other = 6 slices & 6 legend items)
+    idx_5 = chart_view.combo_top_n.findData(5)
+    chart_view.combo_top_n.setCurrentIndex(idx_5)
+    donut_series = chart_view.chart.series()[0]
+    assert donut_series.count() == 6
+    assert "Other (7 stocks" in donut_series.slices()[-1].label()
+    assert chart_view.legend_grid.count() == 6
+
+    # Test legend item hover interaction
+    legend_item_0 = chart_view.legend_grid.itemAt(0).widget()
+    slice_0 = donut_series.slices()[0]
+    assert slice_0.isExploded() is False
+    legend_item_0.hovered.emit(True)
+    assert slice_0.isExploded() is True
+    assert "STOCK_11" in chart_view.lbl_hover_banner.text()
+    legend_item_0.hovered.emit(False)
+    assert slice_0.isExploded() is False
+
+    # Test Top 50 selector (shows all 12 stocks)
+    idx_50 = chart_view.combo_top_n.findData(50)
+    chart_view.combo_top_n.setCurrentIndex(idx_50)
+    donut_series_50 = chart_view.chart.series()[0]
+    assert donut_series_50.count() == 12
+    assert chart_view.legend_grid.count() == 12
+
+    # Click BAR tab
+    chart_view.btn_tab_bar.click()
+    assert chart_view.current_mode == "BAR"
+    assert chart_view.combo_mode.currentData() == "BAR"
+    assert chart_view.btn_tab_bar.property("class") == "chart-tab-active"
+    assert chart_view.btn_tab_donut.property("class") == "chart-tab"
+    assert chart_view.legend_panel.isHidden() is True
+
+    # Click DONUT tab
+    chart_view.btn_tab_donut.click()
+    assert chart_view.current_mode == "DONUT"
+    assert chart_view.legend_panel.isHidden() is False
+
+    # Set mode via combo_mode dropdown
+    idx_bar = chart_view.combo_mode.findData("BAR")
+    chart_view.combo_mode.setCurrentIndex(idx_bar)
+    assert chart_view.current_mode == "BAR"
+    assert chart_view.btn_tab_bar.property("class") == "chart-tab-active"
+
+    # Empty state test
+    empty_df = pd.DataFrame()
+    chart_view.update_data(empty_df)
+    assert chart_view.stack.currentIndex() == 1  # Empty placeholder visible
     chart_view.close()
+
+    # Verify HoldingsView collapsible chart section (default closed)
+    hv = HoldingsView(db_conn)
+    hv.show()
+    assert hv.chart_body.isHidden() is True
+    assert "▶ Show Visual Charts" in hv.btn_toggle_charts.text()
+
+    # Click toggle button to expand
+    hv.btn_toggle_charts.click()
+    assert hv.chart_body.isHidden() is False
+    assert "▼ Hide Visual Charts" in hv.btn_toggle_charts.text()
+
+    # Click toggle button to collapse again
+    hv.btn_toggle_charts.click()
+    assert hv.chart_body.isHidden() is True
+    assert "▶ Show Visual Charts" in hv.btn_toggle_charts.text()
+    hv.close()
 
 
 def test_table_sorting_and_interactive_resizing(qapp, db_conn):
@@ -1107,6 +1163,107 @@ def test_holdings_view_adjustments_button_and_kpis(qapp, db_conn):
     assert "Stock Charges / Brokerage: -₹0.00" in pnl_item.toolTip()
 
     win.close()
+
+
+def test_holdings_view_include_dividends_toggle(qapp, db_conn):
+    """Verify HoldingsView include dividends toggle, total badge, column visibility, and risk calculation."""
+    insert_manual_transaction(db_conn, "ZERODHA_SELF", "INFY", "BUY", 100, 1000.0, "2025-01-01")
+    insert_manual_transaction(db_conn, "ZERODHA_SELF", "INFY", "SELL", 50, 1200.0, "2025-02-01")
+    insert_dividend(
+        db_conn,
+        account_id="ZERODHA_SELF",
+        symbol="INFY",
+        dividend_date="2025-03-01",
+        amount=15000.0,
+        quantity=50,
+        dividend_per_share=300.0,
+    )
+
+    win = MainWindow(db_conn)
+    win.show()
+    hv = win.holdings_view
+    hv.refresh_data()
+
+    # 1. Baseline: Unchecked by default
+    assert hv.chk_include_dividends.isChecked() is False
+    assert hv.chk_include_dividends.text() == "Include Dividends"
+    assert hv.card_dividends.isHidden() is True
+    assert hv.table.isColumnHidden(6) is True
+    assert hv.lbl_legend.text() == "Identity: Actual Exposure - Booked P&L = Net Exposure"
+    assert "40,000.00" in hv.card_risk.value_label.text()
+    assert "₹40,000.00" in hv.table.item(0, 7).text()  # Col 7: Net Exposure
+
+    # 2. Checked: Opt-in dividends into risk calculation
+    hv.chk_include_dividends.setChecked(True)
+    assert hv.chk_include_dividends.isChecked() is True
+    assert hv.card_dividends.isHidden() is False
+    assert "15,000.00" in hv.card_dividends.value_label.text()
+    assert "Total received until" in hv.card_dividends.sub_label.text()
+    assert hv.table.isColumnHidden(6) is False
+    assert "₹15,000.00" in hv.table.item(0, 6).text()  # Col 6: Dividends
+    assert hv.lbl_legend.text() == "Identity: Actual Exposure - (Booked P&L + Dividends) = Net Exposure"
+    assert "25,000.00" in hv.card_risk.value_label.text()
+    assert "₹25,000.00" in hv.table.item(0, 7).text()  # Col 7: Net Exposure (50k - 10k - 15k)
+
+    # 3. Revert: Uncheck
+    hv.chk_include_dividends.setChecked(False)
+    assert hv.card_dividends.isHidden() is True
+    assert hv.table.isColumnHidden(6) is True
+    assert hv.lbl_legend.text() == "Identity: Actual Exposure - Booked P&L = Net Exposure"
+    assert "40,000.00" in hv.card_risk.value_label.text()
+    assert "₹40,000.00" in hv.table.item(0, 7).text()
+
+    win.close()
+
+
+def test_transaction_history_dividends_visibility_and_ledger(qapp, db_conn):
+    """Verify TransactionHistoryDialog conditional dividend checkbox, display, and dd-MM-yyyy date formatting."""
+    insert_manual_transaction(db_conn, "ZERODHA_SELF", "INFY", "BUY", 100, 1000.0, "2025-01-10")
+    insert_dividend(
+        db_conn,
+        account_id="ZERODHA_SELF",
+        symbol="INFY",
+        dividend_date="2025-06-15",
+        amount=2500.0,
+        quantity=100,
+        dividend_per_share=25.0,
+        remarks="Final Dividend",
+    )
+
+    # Case A: Directly opened via All Trades button (initial_search="") -> Checkbox MUST be hidden
+    dlg_general = TransactionHistoryDialog(db_conn, initial_search="")
+    dlg_general.show()
+    assert dlg_general.chk_show_dividends.isHidden() is True
+    assert dlg_general.table.rowCount() == 1
+    dlg_general.close()
+
+    # Case B: Opened for specific symbol from table row -> Checkbox MUST be visible
+    dlg_sym = TransactionHistoryDialog(db_conn, initial_search="INFY")
+    dlg_sym.show()
+    assert dlg_sym.chk_show_dividends.isHidden() is False
+    assert dlg_sym.chk_show_dividends.isChecked() is False
+    assert dlg_sym.table.rowCount() == 1  # Only trade initially
+
+    # Toggle Show Dividends
+    dlg_sym.chk_show_dividends.setChecked(True)
+    assert dlg_sym.table.rowCount() == 2
+
+    # Find dividend row
+    div_row = -1
+    for r in range(dlg_sym.table.rowCount()):
+        if dlg_sym.table.item(r, 3).text() == "DIVIDEND":
+            div_row = r
+            break
+
+    assert div_row >= 0
+    assert dlg_sym.table.item(div_row, 3).text() == "DIVIDEND"
+    assert "100" in dlg_sym.table.item(div_row, 4).text()
+    assert "₹25.00" in dlg_sym.table.item(div_row, 5).text()
+    assert dlg_sym.table.item(div_row, 6).text() == "15-06-2025"  # dd-MM-yyyy format
+    assert "Dividend Total: ₹2,500.00" in dlg_sym.table.item(div_row, 7).text()
+    assert "Final Dividend" in dlg_sym.table.item(div_row, 7).text()
+
+    dlg_sym.close()
 
 
 

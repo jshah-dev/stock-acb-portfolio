@@ -227,7 +227,7 @@ class PnlAdjustmentsDialog(QDialog):
         self.date_edit.setCalendarPopup(True)
         configure_modern_calendar(self.date_edit.calendarWidget())
         self.date_edit.setDate(QDate.currentDate())
-        self.date_edit.setDisplayFormat("yyyy-MM-dd")
+        self.date_edit.setDisplayFormat("dd-MM-yyyy")
         grid.addWidget(self.date_edit, 5, 1)
 
         # Notes

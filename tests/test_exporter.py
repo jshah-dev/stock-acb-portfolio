@@ -5,8 +5,16 @@ from pathlib import Path
 import openpyxl
 import pytest
 
-from portfolio_tracker.db import init_db, insert_manual_transaction, insert_pnl_adjustment
-from portfolio_tracker.exporter import export_portfolio_to_excel
+from portfolio_tracker.db import (
+    init_db,
+    insert_dividend,
+    insert_manual_transaction,
+    insert_pnl_adjustment,
+)
+from portfolio_tracker.exporter import (
+    export_dividends_to_excel,
+    export_portfolio_to_excel,
+)
 
 
 @pytest.fixture
@@ -116,5 +124,75 @@ def test_export_portfolio_to_excel(db_conn, tmp_path):
     assert ws_adj.cell(row=5, column=3).value == "DONE_STK"
     assert ws_adj.cell(row=5, column=6).value == -120.50
     assert ws_adj.cell(row=5, column=8).value == "Q4 DP & AMC"
+
+
+def test_export_dividends_to_excel_consolidated_and_single(db_conn, tmp_path):
+    """Verify that export_dividends_to_excel generates per-account sheets, company totals, and date range headers."""
+    # Seed dividend transactions for both accounts
+    insert_dividend(db_conn, "ZERODHA_DAD", "INFY", "2025-05-10", 220.0, 10, 22.0)
+    insert_dividend(db_conn, "ZERODHA_DAD", "RELIANCE", "2025-07-15", 350.0, 50, 7.0)
+    insert_dividend(db_conn, "ZERODHA_SELF", "TCS", "2025-08-20", 500.0, 20, 25.0)
+
+    # 1. Test Consolidated Export
+    cons_xlsx = tmp_path / "Consolidated_Dividends.xlsx"
+    export_dividends_to_excel(
+        db_conn=db_conn,
+        file_path=cons_xlsx,
+        account_id=None,
+        start_date="2025-04-01",
+        end_date="2026-03-31",
+    )
+
+    wb_cons = openpyxl.load_workbook(cons_xlsx)
+    sheet_names = wb_cons.sheetnames
+
+    # Must contain Consolidated Ledger
+    assert "Consolidated Ledger" in sheet_names
+    # Must contain one sheet per account
+    assert "Father's Zerodha" in sheet_names
+    assert "Self Zerodha" in sheet_names
+    # Must contain Company Wise Total
+    assert "Company Wise Total" in sheet_names
+
+    # Check Date Range Banner on Consolidated Ledger
+    ws_cons = wb_cons["Consolidated Ledger"]
+    subtitle = ws_cons.cell(row=2, column=1).value
+    assert "Date Range: 01-04-2025 to 31-03-2026" in subtitle
+    assert "Scope: Consolidated (All Accounts)" in subtitle
+
+    # Check Company Wise Total sheet
+    ws_comp = wb_cons["Company Wise Total"]
+    assert "Dividend Income - Company Wise Total" in ws_comp.cell(row=1, column=1).value
+    assert "Date Range: 01-04-2025 to 31-03-2026" in ws_comp.cell(row=2, column=1).value
+
+    # Check columns in Company Wise Total
+    comp_headers = [ws_comp.cell(row=4, column=c).value for c in range(1, 5)]
+    assert "Company Symbol" in comp_headers
+    assert "Total Dividends Received (₹)" in comp_headers
+    assert "Contribution (%)" in comp_headers
+
+    # Check that companies appear and total row exists
+    comp_syms = [ws_comp.cell(row=r, column=1).value for r in range(5, ws_comp.max_row + 1)]
+    assert "INFY" in comp_syms
+    assert "RELIANCE" in comp_syms
+    assert "TCS" in comp_syms
+    assert "TOTAL" in comp_syms
+
+    # 2. Test Single Account Export
+    single_xlsx = tmp_path / "Dad_Dividends.xlsx"
+    export_dividends_to_excel(
+        db_conn=db_conn,
+        file_path=single_xlsx,
+        account_id="ZERODHA_DAD",
+        start_date="2025-04-01",
+        end_date="2026-03-31",
+    )
+
+    wb_single = openpyxl.load_workbook(single_xlsx)
+    single_sheets = wb_single.sheetnames
+    assert "Father's Zerodha Ledger" in single_sheets
+    assert "Company Wise Total" in single_sheets
+    assert "Self Zerodha" not in single_sheets
+
 
 

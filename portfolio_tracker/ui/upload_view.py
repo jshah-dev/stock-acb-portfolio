@@ -276,7 +276,7 @@ class UploadView(QWidget):
         self.date_filter.setDate(QDate.currentDate())
         self.date_filter.setCalendarPopup(True)
         configure_modern_calendar(self.date_filter.calendarWidget())
-        self.date_filter.setDisplayFormat("yyyy-MM-dd")
+        self.date_filter.setDisplayFormat("dd-MM-yyyy")
         self.date_filter.setMinimumWidth(130)
         self.date_filter.setMinimumHeight(36)
         self.date_filter.setToolTip("Target cutoff date for portfolio ledger sync")
