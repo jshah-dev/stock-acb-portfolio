@@ -131,14 +131,83 @@ def init_db(db_path_or_conn: Optional[Union[str, Path, sqlite3.Connection]] = No
             ON symbol_mappings(target_symbol);
         """)
 
-        # Backfill symbols from transactions table if any exist
+        # 6. P&L Adjustments, Carried-Forward Gains/Losses & Brokerage Charges Table
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS pnl_adjustments (
+                adjustment_id TEXT PRIMARY KEY,
+                account_id TEXT NOT NULL,
+                symbol TEXT,
+                adjustment_date TIMESTAMP NOT NULL,
+                category TEXT NOT NULL CHECK(category IN (
+                    'CARRIED_FORWARD_PROFIT',
+                    'CARRIED_FORWARD_LOSS',
+                    'BROKERAGE_CHARGES',
+                    'DP_CHARGES',
+                    'DIVIDEND_INCOME',
+                    'OTHER_ADJUSTMENT'
+                )),
+                direction TEXT NOT NULL CHECK(direction IN ('PROFIT', 'LOSS')),
+                amount REAL NOT NULL CHECK(amount > 0),
+                notes TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (account_id) REFERENCES accounts(account_id) ON DELETE CASCADE
+            );
+        """)
+
+        # Migration: Drop legacy source_reference column if present
+        adj_columns = [row[1] for row in conn.execute("PRAGMA table_info(pnl_adjustments);").fetchall()]
+        if "source_reference" in adj_columns:
+            try:
+                conn.execute("ALTER TABLE pnl_adjustments DROP COLUMN source_reference;")
+            except Exception:
+                conn.execute("PRAGMA foreign_keys = OFF;")
+                conn.execute("""
+                    CREATE TABLE pnl_adjustments_migrated (
+                        adjustment_id TEXT PRIMARY KEY,
+                        account_id TEXT NOT NULL,
+                        symbol TEXT,
+                        adjustment_date TIMESTAMP NOT NULL,
+                        category TEXT NOT NULL,
+                        direction TEXT NOT NULL,
+                        amount REAL NOT NULL,
+                        notes TEXT,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY (account_id) REFERENCES accounts(account_id) ON DELETE CASCADE
+                    );
+                """)
+                conn.execute("""
+                    INSERT INTO pnl_adjustments_migrated (
+                        adjustment_id, account_id, symbol, adjustment_date, category, direction, amount, notes, created_at
+                    )
+                    SELECT adjustment_id, account_id, symbol, adjustment_date, category, direction, amount, notes, created_at
+                    FROM pnl_adjustments;
+                """)
+                conn.execute("DROP TABLE pnl_adjustments;")
+                conn.execute("ALTER TABLE pnl_adjustments_migrated RENAME TO pnl_adjustments;")
+                conn.execute("PRAGMA foreign_keys = ON;")
+
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_adjustments_account_date 
+            ON pnl_adjustments(account_id, adjustment_date);
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_adjustments_symbol_date 
+            ON pnl_adjustments(symbol, adjustment_date);
+        """)
+
+        # Backfill symbols from transactions and adjustments table if any exist
         conn.execute("""
             INSERT OR IGNORE INTO symbols (symbol)
             SELECT DISTINCT UPPER(TRIM(symbol)) FROM transactions 
             WHERE symbol IS NOT NULL AND TRIM(symbol) != '';
         """)
+        conn.execute("""
+            INSERT OR IGNORE INTO symbols (symbol)
+            SELECT DISTINCT UPPER(TRIM(symbol)) FROM pnl_adjustments 
+            WHERE symbol IS NOT NULL AND TRIM(symbol) != '';
+        """)
 
-        # 5. Initial Starter Seeding
+        # 7. Initial Starter Seeding
         cursor = conn.cursor()
         cursor.execute("SELECT COUNT(*) FROM accounts;")
         count = cursor.fetchone()[0]
@@ -238,13 +307,17 @@ def update_account(
             if clash:
                 raise ValueError(f"Account ID '{new_id}' is already in use.")
 
-            # Atomic migration of account and child transactions
+            # Atomic migration of account and child transactions / adjustments
             conn.execute(
                 "INSERT INTO accounts (account_id, user_name, broker) VALUES (?, ?, ?);",
                 (new_id, name, broker),
             )
             conn.execute(
                 "UPDATE transactions SET account_id = ? WHERE UPPER(TRIM(account_id)) = ?;",
+                (new_id, old_id),
+            )
+            conn.execute(
+                "UPDATE pnl_adjustments SET account_id = ? WHERE UPPER(TRIM(account_id)) = ?;",
                 (new_id, old_id),
             )
             conn.execute(
@@ -365,6 +438,9 @@ def get_all_symbols(conn: sqlite3.Connection) -> List[str]:
         SELECT DISTINCT UPPER(TRIM(symbol)) FROM transactions 
         WHERE symbol IS NOT NULL AND TRIM(symbol) != ''
         UNION
+        SELECT DISTINCT UPPER(TRIM(symbol)) FROM pnl_adjustments 
+        WHERE symbol IS NOT NULL AND TRIM(symbol) != ''
+        UNION
         SELECT source_symbol FROM symbol_mappings
         UNION
         SELECT target_symbol FROM symbol_mappings
@@ -447,13 +523,18 @@ def get_symbol_trade_count(conn: sqlite3.Connection, symbol: str) -> int:
 
 
 def get_transaction(conn: sqlite3.Connection, trade_id: str) -> Optional[Dict[str, Any]]:
-    """Retrieve a single transaction with account metadata by trade_id."""
+    """Retrieve a single transaction with account metadata and canonical symbol mapping by trade_id."""
     query = """
-        SELECT t.trade_id, t.account_id, a.user_name, t.symbol, 
+        SELECT t.trade_id, t.account_id, a.user_name, 
+               t.symbol,
+               t.symbol AS original_symbol,
+               COALESCE(m.target_symbol, t.symbol) AS canonical_symbol,
+               (m.target_symbol IS NOT NULL) AS is_mapped,
                t.transaction_type, t.quantity, t.price, t.trade_date, 
                t.notes, t.created_at
         FROM transactions t
         JOIN accounts a ON t.account_id = a.account_id
+        LEFT JOIN symbol_mappings m ON UPPER(TRIM(t.symbol)) = UPPER(TRIM(m.source_symbol))
         WHERE t.trade_id = ?;
     """
     row = conn.execute(query, (trade_id,)).fetchone()
@@ -523,7 +604,7 @@ def get_recent_transactions(
     account_id: Optional[str] = None,
     limit: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
-    """Retrieve transactions with account metadata for audit and review.
+    """Retrieve transactions with account metadata and canonical symbol mapping for audit and review.
     
     Args:
         conn: SQLite connection.
@@ -531,11 +612,16 @@ def get_recent_transactions(
         limit: Optional maximum rows to return. If None or <= 0, returns all transactions.
     """
     query = """
-        SELECT t.trade_id, t.account_id, a.user_name, t.symbol, 
+        SELECT t.trade_id, t.account_id, a.user_name, 
+               t.symbol,
+               t.symbol AS original_symbol,
+               COALESCE(m.target_symbol, t.symbol) AS canonical_symbol,
+               (m.target_symbol IS NOT NULL) AS is_mapped,
                t.transaction_type, t.quantity, t.price, t.trade_date, 
                t.notes, t.created_at
         FROM transactions t
         JOIN accounts a ON t.account_id = a.account_id
+        LEFT JOIN symbol_mappings m ON UPPER(TRIM(t.symbol)) = UPPER(TRIM(m.source_symbol))
     """
     params: List[Any] = []
     if account_id:
@@ -559,6 +645,259 @@ def get_all_transactions(
 ) -> List[Dict[str, Any]]:
     """Retrieve all historical transactions with account metadata without truncation."""
     return get_recent_transactions(conn, account_id=account_id, limit=None)
+
+
+# --- P&L Adjustments, Carried-Forward Gains/Losses & Brokerage Charges ---
+
+def insert_pnl_adjustment(
+    conn: sqlite3.Connection,
+    account_id: str,
+    amount: float,
+    adjustment_date: Union[str, datetime],
+    category: str,
+    direction: Optional[str] = None,
+    symbol: Optional[str] = None,
+    notes: Optional[str] = None,
+) -> str:
+    """Insert a manual P&L adjustment (carried-forward profit/loss, brokerage charges).
+    
+    Returns:
+        Generated unique adjustment_id.
+    """
+    acc_id = account_id.strip().upper()
+    cat = category.strip().upper()
+    sym = symbol.strip().upper() if symbol and symbol.strip() else None
+    if not sym:
+        raise ValueError("A valid stock symbol is required for P&L adjustments.")
+    clean_notes = notes.strip() if notes and notes.strip() else None
+
+    if amount <= 0:
+        raise ValueError("Adjustment amount must be greater than 0.")
+
+    valid_cats = {
+        "CARRIED_FORWARD_PROFIT",
+        "CARRIED_FORWARD_LOSS",
+        "BROKERAGE_CHARGES",
+    }
+    if cat not in valid_cats:
+        raise ValueError(f"Invalid category '{cat}'. Must be one of {valid_cats}.")
+
+    if direction is None:
+        dir_str = "PROFIT" if cat == "CARRIED_FORWARD_PROFIT" else "LOSS"
+    else:
+        dir_str = direction.strip().upper()
+        if dir_str not in ("PROFIT", "LOSS"):
+            raise ValueError("Direction must be 'PROFIT' or 'LOSS'.")
+
+    # Format date to ISO string
+    if isinstance(adjustment_date, datetime):
+        date_str = adjustment_date.strftime("%Y-%m-%d %H:%M:%S")
+    else:
+        date_str = str(adjustment_date).strip()
+        if len(date_str) == 10 and date_str[4] == "-" and date_str[7] == "-":
+            date_str = f"{date_str} 12:00:00"
+
+    ts_slug = datetime.now().strftime("%Y%m%d%H%M%S")
+    rand_slug = uuid.uuid4().hex[:8]
+    prefix = "PROFIT" if dir_str == "PROFIT" else "LOSS"
+    adj_id = f"ADJ_{prefix}_{acc_id}_{ts_slug}_{rand_slug}"
+
+    with conn:
+        conn.execute(
+            """
+            INSERT INTO pnl_adjustments 
+            (adjustment_id, account_id, symbol, adjustment_date, category, direction, amount, notes)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+            """,
+            (adj_id, acc_id, sym, date_str, cat, dir_str, float(amount), clean_notes),
+        )
+        if sym:
+            conn.execute(
+                """
+                INSERT INTO symbols (symbol, last_used) VALUES (?, CURRENT_TIMESTAMP)
+                ON CONFLICT(symbol) DO UPDATE SET last_used = CURRENT_TIMESTAMP;
+                """,
+                (sym,),
+            )
+
+    return adj_id
+
+
+def get_pnl_adjustments(
+    conn: sqlite3.Connection,
+    account_id: Optional[str] = None,
+    symbol: Optional[str] = None,
+    cutoff_date: Optional[Union[str, datetime]] = None,
+    limit: Optional[int] = None,
+) -> List[Dict[str, Any]]:
+    """Retrieve P&L adjustments with account metadata and canonical symbol mappings."""
+    query = """
+        SELECT adj.adjustment_id, adj.account_id, a.user_name, 
+               adj.symbol,
+               adj.symbol AS original_symbol,
+               COALESCE(m.target_symbol, adj.symbol) AS canonical_symbol,
+               (m.target_symbol IS NOT NULL) AS is_mapped,
+               adj.adjustment_date, adj.category, adj.direction, adj.amount,
+               CASE WHEN adj.direction = 'PROFIT' THEN adj.amount ELSE -adj.amount END AS signed_amount,
+               adj.notes, adj.created_at
+        FROM pnl_adjustments adj
+        JOIN accounts a ON adj.account_id = a.account_id
+        LEFT JOIN symbol_mappings m ON UPPER(TRIM(adj.symbol)) = UPPER(TRIM(m.source_symbol))
+        WHERE 1=1
+    """
+    params: List[Any] = []
+    if account_id:
+        query += " AND adj.account_id = ?"
+        params.append(account_id)
+    if symbol:
+        clean_sym = symbol.strip().upper()
+        query += " AND (UPPER(TRIM(adj.symbol)) = ? OR UPPER(TRIM(m.target_symbol)) = ?)"
+        params.append(clean_sym)
+        params.append(clean_sym)
+    if cutoff_date:
+        c_str = str(cutoff_date).strip()
+        if len(c_str) == 10 and c_str[4] == "-" and c_str[7] == "-":
+            c_str = f"{c_str} 23:59:59"
+        query += " AND adj.adjustment_date <= ?"
+        params.append(c_str)
+
+    query += " ORDER BY adj.adjustment_date DESC, adj.created_at DESC"
+    if limit is not None and limit > 0:
+        query += " LIMIT ?;"
+        params.append(limit)
+    else:
+        query += ";"
+
+    rows = conn.execute(query, params).fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_pnl_adjustment(conn: sqlite3.Connection, adjustment_id: str) -> Optional[Dict[str, Any]]:
+    """Retrieve a single P&L adjustment by adjustment_id."""
+    query = """
+        SELECT adj.adjustment_id, adj.account_id, a.user_name, 
+               adj.symbol,
+               adj.symbol AS original_symbol,
+               COALESCE(m.target_symbol, adj.symbol) AS canonical_symbol,
+               (m.target_symbol IS NOT NULL) AS is_mapped,
+               adj.adjustment_date, adj.category, adj.direction, adj.amount,
+               CASE WHEN adj.direction = 'PROFIT' THEN adj.amount ELSE -adj.amount END AS signed_amount,
+               adj.notes, adj.created_at
+        FROM pnl_adjustments adj
+        JOIN accounts a ON adj.account_id = a.account_id
+        LEFT JOIN symbol_mappings m ON UPPER(TRIM(adj.symbol)) = UPPER(TRIM(m.source_symbol))
+        WHERE adj.adjustment_id = ?;
+    """
+    row = conn.execute(query, (adjustment_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def update_pnl_adjustment(
+    conn: sqlite3.Connection,
+    adjustment_id: str,
+    account_id: str,
+    amount: float,
+    adjustment_date: Union[str, datetime],
+    category: str,
+    direction: Optional[str] = None,
+    symbol: Optional[str] = None,
+    notes: Optional[str] = None,
+) -> bool:
+    """Update an existing P&L adjustment."""
+    acc_id = account_id.strip().upper()
+    cat = category.strip().upper()
+    sym = symbol.strip().upper() if symbol and symbol.strip() else None
+    if not sym:
+        raise ValueError("A valid stock symbol is required for P&L adjustments.")
+    clean_notes = notes.strip() if notes and notes.strip() else None
+
+    if amount <= 0:
+        raise ValueError("Adjustment amount must be greater than 0.")
+
+    valid_cats = {
+        "CARRIED_FORWARD_PROFIT",
+        "CARRIED_FORWARD_LOSS",
+        "BROKERAGE_CHARGES",
+    }
+    if cat not in valid_cats:
+        raise ValueError(f"Invalid category '{cat}'. Must be one of {valid_cats}.")
+
+    if direction is None:
+        dir_str = "PROFIT" if cat == "CARRIED_FORWARD_PROFIT" else "LOSS"
+    else:
+        dir_str = direction.strip().upper()
+        if dir_str not in ("PROFIT", "LOSS"):
+            raise ValueError("Direction must be 'PROFIT' or 'LOSS'.")
+
+    if isinstance(adjustment_date, datetime):
+        date_str = adjustment_date.strftime("%Y-%m-%d %H:%M:%S")
+    else:
+        date_str = str(adjustment_date).strip()
+        if len(date_str) == 10 and date_str[4] == "-" and date_str[7] == "-":
+            date_str = f"{date_str} 12:00:00"
+
+    with conn:
+        cursor = conn.execute(
+            """
+            UPDATE pnl_adjustments 
+            SET account_id = ?, symbol = ?, adjustment_date = ?, category = ?, direction = ?, 
+                amount = ?, notes = ?
+            WHERE adjustment_id = ?;
+            """,
+            (acc_id, sym, date_str, cat, dir_str, float(amount), clean_notes, adjustment_id),
+        )
+        if cursor.rowcount > 0:
+            if sym:
+                conn.execute(
+                    """
+                    INSERT INTO symbols (symbol, last_used) VALUES (?, CURRENT_TIMESTAMP)
+                    ON CONFLICT(symbol) DO UPDATE SET last_used = CURRENT_TIMESTAMP;
+                    """,
+                    (sym,),
+                )
+            return True
+        return False
+
+
+def delete_pnl_adjustment(conn: sqlite3.Connection, adjustment_id: str) -> bool:
+    """Delete a single P&L adjustment by adjustment_id."""
+    with conn:
+        cursor = conn.execute("DELETE FROM pnl_adjustments WHERE adjustment_id = ?;", (adjustment_id,))
+        return cursor.rowcount > 0
+
+
+def get_adjustments_summary(
+    conn: sqlite3.Connection,
+    account_id: Optional[str] = None,
+    cutoff_date: Optional[Union[str, datetime]] = None,
+) -> Dict[str, Any]:
+    """Calculate aggregate summary of P&L adjustments (carried profit/loss, charges, net adjustment)."""
+    adjustments = get_pnl_adjustments(conn, account_id=account_id, cutoff_date=cutoff_date)
+    total_carried_profit = sum(a["amount"] for a in adjustments if a["category"] == "CARRIED_FORWARD_PROFIT")
+    total_carried_loss = sum(a["amount"] for a in adjustments if a["category"] == "CARRIED_FORWARD_LOSS")
+    total_brokerage = sum(a["amount"] for a in adjustments if a["category"] in ("BROKERAGE_CHARGES", "DP_CHARGES"))
+    total_dividend = sum(a["amount"] for a in adjustments if a["category"] == "DIVIDEND_INCOME")
+    other_pos = sum(
+        a["amount"] for a in adjustments if a["category"] == "OTHER_ADJUSTMENT" and a["direction"] == "PROFIT"
+    )
+    other_neg = sum(
+        a["amount"] for a in adjustments if a["category"] == "OTHER_ADJUSTMENT" and a["direction"] == "LOSS"
+    )
+
+    total_profits = total_carried_profit + total_dividend + other_pos
+    total_losses = total_carried_loss + total_brokerage + other_neg
+    net_adjustments = total_profits - total_losses
+
+    return {
+        "total_carried_profit": round(total_carried_profit, 2),
+        "total_carried_loss": round(total_carried_loss, 2),
+        "total_brokerage": round(total_brokerage, 2),
+        "total_dividend": round(total_dividend, 2),
+        "total_profits": round(total_profits, 2),
+        "total_losses": round(total_losses, 2),
+        "net_adjustments": round(net_adjustments, 2),
+        "adjustments_count": len(adjustments),
+    }
 
 
 # --- Database Backup and Restore Utilities ---

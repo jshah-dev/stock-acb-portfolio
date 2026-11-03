@@ -12,7 +12,7 @@ import pandas as pd
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
-from portfolio_tracker.db import get_accounts
+from portfolio_tracker.db import get_accounts, get_pnl_adjustments
 from portfolio_tracker.engine import get_holdings
 
 # Style definitions (Tailwind Slate palette)
@@ -293,6 +293,73 @@ def export_portfolio_to_excel(
             current_row_acc += 1
 
     _style_table(ws_acc, start_row=header_row_acc)
+
+    # ==========================================
+    # Tab 3: P&L Adjustments & Brokerage Ledger
+    # ==========================================
+    ws_adj = wb.create_sheet(title="P&L Adjustments & Brokerage")
+    ws_adj.views.sheetView[0].showGridLines = True
+
+    ws_adj.cell(row=1, column=1, value="Stock ACB Portfolio Tracker - P&L Adjustments & Brokerage Ledger").font = TITLE_FONT
+    ws_adj.cell(row=2, column=1, value=f"Generated: {timestamp_str} | Cutoff Date: {cutoff_display}").font = SUBTITLE_FONT
+
+    adj_headers = [
+        "Adjustment ID",
+        "Account",
+        "Stock Symbol",
+        "Category",
+        "Direction",
+        "Amount (₹)",
+        "Effective Date",
+        "Notes",
+    ]
+
+    header_row_adj = 4
+    for c_idx, h_text in enumerate(adj_headers, start=1):
+        ws_adj.cell(row=header_row_adj, column=c_idx, value=h_text)
+
+    try:
+        adjs = get_pnl_adjustments(db_conn, cutoff_date=cutoff_date)
+    except Exception:
+        adjs = []
+
+    current_row_adj = header_row_adj + 1
+    for a in adjs:
+        # ID
+        ws_adj.cell(row=current_row_adj, column=1, value=a["adjustment_id"]).alignment = Alignment(horizontal="left", vertical="center")
+
+        # Account
+        ws_adj.cell(row=current_row_adj, column=2, value=a["user_name"]).alignment = Alignment(horizontal="left", vertical="center")
+
+        # Symbol / Scope
+        sym_scope = str(a.get("canonical_symbol") or a.get("symbol") or "—")
+        ws_adj.cell(row=current_row_adj, column=3, value=sym_scope).alignment = Alignment(horizontal="left", vertical="center")
+
+        # Category
+        cat_str = str(a["category"]).replace("_", " ").title()
+        ws_adj.cell(row=current_row_adj, column=4, value=cat_str).alignment = Alignment(horizontal="left", vertical="center")
+
+        # Direction
+        dir_str = "+ PROFIT" if a["direction"] == "PROFIT" else "- LOSS / CHG"
+        c_dir = ws_adj.cell(row=current_row_adj, column=5, value=dir_str)
+        c_dir.alignment = Alignment(horizontal="center", vertical="center")
+
+        # Amount
+        amt_val = float(a["amount"])
+        signed_amt = amt_val if a["direction"] == "PROFIT" else -amt_val
+        c_amt = ws_adj.cell(row=current_row_adj, column=6, value=signed_amt)
+        c_amt.number_format = CURRENCY_FORMAT
+        c_amt.alignment = Alignment(horizontal="right", vertical="center")
+
+        # Date
+        ws_adj.cell(row=current_row_adj, column=7, value=str(a["adjustment_date"])[:19]).alignment = Alignment(horizontal="center", vertical="center")
+
+        # Notes
+        ws_adj.cell(row=current_row_adj, column=8, value=str(a.get("notes") or "")).alignment = Alignment(horizontal="left", vertical="center")
+
+        current_row_adj += 1
+
+    _style_table(ws_adj, start_row=header_row_adj)
 
     wb.save(str(target))
     return target

@@ -38,14 +38,15 @@ Track positions with mathematical precision through 9 dedicated columns:
 ---
 
 ### 2. Corporate Actions & Symbol Name Changes
-Companies periodically undergo rebranding, mergers, demergers, or ticker changes (e.g., `CADILAHC` → `ZYDUSLIFE`, `MOTHERSUMI` → `MOTHERSON`).
+Companies periodically undergo rebranding, mergers, demergers, or ticker changes (e.g., `CADILAHC` → `ZYDUSLIFE`, `PEL` → `PIRAMALFIN`, `MOTHERSUMI` → `MOTHERSON`).
 - An interactive **Symbol Mapping** dialog allows you to link old ticker names to their canonical new symbol.
 - Automatically heals cost basis history across name transitions, preventing false "sell without buy" anomalies and preserving continuous ACB calculations.
+- **Dual-Search Audit Ledger:** In the All Trades audit view, querying the new canonical ticker (e.g. `PIRAMALFIN`) shows trades from both `PEL` and `PIRAMALFIN`, while querying the historical symbol `PEL` isolates only `PEL` trades. Mapped transactions display a clear visual transformation badge: `PEL ➔ PIRAMALFIN`.
 
 ### 3. Multi-Account Family Ledger
 - Consolidate multiple family members and demat accounts (Self, Spouse, HUF, Parents, Kids).
 - Seamlessly switch between the **Consolidated Family View** (pooled holdings) and individual account tabs with a single click.
-- **Account Management & Post-Registration Editing:** Safely add, delete, or edit account IDs and Display Names post-registration. Renaming an Account ID automatically and transactionally cascades across all linked historical trades.
+- **Account Management & Post-Registration Editing:** Safely add, delete, or edit account IDs and Display Names post-registration. Renaming an Account ID automatically and transactionally cascades across all linked historical trades and P&L adjustments.
 
 ### 4. Zerodha Tradebook Ingestion (100% Offline)
 - Direct drag-and-drop or multi-file selection for Zerodha tradebook exports (`.xlsx` and `.csv`).
@@ -60,6 +61,7 @@ Companies periodically undergo rebranding, mergers, demergers, or ticker changes
 - **Bonus Shares Support (₹0.00 Price):** Bonus shares can be recorded with an execution price of **₹0.00**. Mathematically, this increases share quantity without adding acquisition cost, correctly lowering the average cost basis per share without skewing capital exposure.
 - Full "All Trades" audit dialog with instant search, auto-fitting, single trade deletion, and **Trade Editing**:
   - **Unlimited Historical Depth:** Loads the complete trade ledger without arbitrary record limits, ensuring older transactions are never truncated.
+  - **Unified Ledger Toggle:** Includes a `[✓] Show P&L Adjustments` checkbox to seamlessly interleave trades, carried-forward profits/losses, and brokerage charges into a single chronological ledger.
   - **Script-Specific Filtering & Live Counter:** Opens directly from any stock in the Holdings table with search pre-filled, accompanied by a dynamic `Showing X of Y trade(s)` status badge.
   - **In-Dialog Account Filter:** Switch between "All Accounts (Consolidated)" and specific family member accounts directly within the audit view.
   - Edit any transaction (quantity, price, date, type, account) to account for stock splits (e.g. 1:2) or bonus issues.
@@ -67,22 +69,36 @@ Companies periodically undergo rebranding, mergers, demergers, or ticker changes
   - Dedicated **Confirmation Review Tab** comparing Before vs After values side-by-side with difference highlights before applying changes.
   - Immediately recalculates portfolio cost basis, Actual Exposure, Booked P&L, and Net Exposure upon saving.
 
-### 6. Interactive Visualizations & Charts
+### 6. P&L Adjustments, Carried-Forward Profits & Brokerage Ledger
+Real-world portfolio performance is impacted by untracked historical trades and broker fees that eat into profits.
+- **Carried-Forward Profit/Loss:** Bring forward lump-sum realized profit or loss from older, untracked brokerage accounts into your current active ledger.
+- **Brokerage & Taxes:** Record brokerage, STT, exchange turnover fees, GST, and DP sale debits.
+- **Stock-Specific Scope:** Assigning an adjustment to a stock directly modifies its Booked P&L and reduces Net Exposure, enabling historical profits to legitimately qualify current positions for **Risk Free (House Money)** status.
+- **Account-Wide Scope:** Leaving the symbol blank applies the adjustment to the overall account and family portfolio returns.
+- **Quick Category Presets:** Dedicated one-click preset buttons (`🟢 Carried Profit`, `🔴 Carried Loss`, `🔴 Brokerage & Taxes`, `🔴 DP Charges`, `🟢 Dividend`).
+- **Comprehensive Audit Ledger:** Full search, filtering, auto-fitting, and inline edit/delete functionality with immediate ledger recalculation.
+- **KPI Card Breakdown:** Card 2 (Realized P&L) dynamically displays the underlying breakdown: `Trades: ₹X • Adj: ±₹Y`.
+- **Holdings Tooltip:** Hovering over any stock's Booked P&L cell displays a detailed breakdown: Trade Realized Gains, Carried Forward Profit, and Stock Charges.
+
+### 7. Interactive Visualizations & Charts
 - Built with high-performance native Qt Charts (QChart).
 - **Capital Allocation (Donut):** Portfolio weightings by stock with real-time percentage banners.
 - **Exposure Recovery (Bar):** Visual comparison of Actual Capital Invested vs. Net Capital at Risk side-by-side.
 - **Realized P&L Distribution (Bar):** Visual breakdown of cumulative booked profits and losses by stock.
 - Instant inspection banner updates on mouse hover with formatted currency tooltips.
 
-### 7. Formatted Excel Reports
+### 8. Formatted Excel Reports
 - Export professional, multi-tab Excel workbooks (`.xlsx`) generated via `openpyxl`.
-- Includes both **Consolidated Family View** and dedicated **Account-Wise Breakdown** sheets with auto-fitted column widths, styled header rows, and formatted currency cells.
+- Includes three dedicated sheets:
+  1. **Consolidated Family View:** Pooled family holdings with ACB columns and risk-free badges.
+  2. **Account-Wise Breakdown:** Disaggregated accounts with subheadings.
+  3. **P&L Adjustments & Brokerage:** Complete audit ledger of all adjustments, carried profits, and broker fees with signed accounting amounts.
 
-### 8. Relocatable SQLite Storage & Cloud Sync
+### 9. Relocatable SQLite Storage & Cloud Sync
 - Single-file SQLite database with **Write-Ahead Logging (WAL)** for ACID transactional integrity and crash resistance.
 - Change the database storage folder at any time (e.g., relocate to Google Drive, Dropbox, or OneDrive) to automatically sync your portfolio across multiple machines.
 
-### 9. Modern Native UI & Application Branding
+### 10. Modern Native UI & Application Branding
 - Custom multi-resolution application icons configured for both macOS (`.icns` / `.png`) and Windows (`.ico`).
 - Windows taskbar AppUserModelID integration ensuring crisp desktop taskbar grouping and launcher branding.
 - Setup wizard branding with embedded installer icons.

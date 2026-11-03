@@ -5,7 +5,7 @@ from pathlib import Path
 import openpyxl
 import pytest
 
-from portfolio_tracker.db import init_db, insert_manual_transaction
+from portfolio_tracker.db import init_db, insert_manual_transaction, insert_pnl_adjustment
 from portfolio_tracker.exporter import export_portfolio_to_excel
 
 
@@ -28,6 +28,18 @@ def db_conn(tmp_path):
     # Closed position stock
     insert_manual_transaction(conn, "ZERODHA_SELF", "DONE_STK", "BUY", 20, 50.0, "2026-02-05 10:00:00")
     insert_manual_transaction(conn, "ZERODHA_SELF", "DONE_STK", "SELL", 20, 75.0, "2026-02-12 11:00:00")
+
+    # Seed P&L adjustment
+    insert_pnl_adjustment(
+        conn,
+        account_id="ZERODHA_SELF",
+        amount=120.50,
+        adjustment_date="2026-02-15",
+        category="BROKERAGE_CHARGES",
+        direction="LOSS",
+        symbol="DONE_STK",
+        notes="Q4 DP & AMC",
+    )
 
     yield conn
     conn.close()
@@ -86,4 +98,23 @@ def test_export_portfolio_to_excel(db_conn, tmp_path):
     acc_names = [ws_acc.cell(row=r, column=1).value for r in range(5, ws_acc.max_row + 1)]
     assert "Father's Zerodha" in acc_names
     assert "Self Zerodha" in acc_names
+
+    # Check Tab 3: P&L Adjustments & Brokerage
+    assert "P&L Adjustments & Brokerage" in sheet_names
+    ws_adj = wb["P&L Adjustments & Brokerage"]
+    assert "P&L Adjustments & Brokerage Ledger" in ws_adj.cell(row=1, column=1).value
+    headers_adj = [ws_adj.cell(row=4, column=c).value for c in range(1, 9)]
+    assert "Adjustment ID" in headers_adj
+    assert "Stock Symbol" in headers_adj
+    assert "Amount (₹)" in headers_adj
+    assert "Category" in headers_adj
+    assert "Notes" in headers_adj
+
+    # Verify adjustment row in Tab 3
+    assert ws_adj.max_row >= 5
+    assert ws_adj.cell(row=5, column=2).value == "Self Zerodha"
+    assert ws_adj.cell(row=5, column=3).value == "DONE_STK"
+    assert ws_adj.cell(row=5, column=6).value == -120.50
+    assert ws_adj.cell(row=5, column=8).value == "Q4 DP & AMC"
+
 

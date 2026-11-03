@@ -7,11 +7,18 @@ import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QAbstractItemView, QApplication
 
-from portfolio_tracker.db import init_db, insert_manual_transaction
+from portfolio_tracker.db import (
+    add_symbol_mapping,
+    get_pnl_adjustments,
+    init_db,
+    insert_manual_transaction,
+    insert_pnl_adjustment,
+)
 from portfolio_tracker.ui.account_manager_dialog import AccountManagerDialog
 from portfolio_tracker.ui.edit_trade_dialog import EditTradeDialog
 from portfolio_tracker.ui.main_window import MainWindow
 from portfolio_tracker.ui.manual_trade_dialog import ManualTradeDialog
+from portfolio_tracker.ui.pnl_adjustments_dialog import PnlAdjustmentsDialog
 from portfolio_tracker.ui.transaction_history_dialog import TransactionHistoryDialog
 from portfolio_tracker.ui.upload_view import UploadView
 
@@ -740,14 +747,19 @@ def test_holdings_table_search_and_double_click_navigation(qapp, db_conn, monkey
     assert len(visible_status) >= 1
     hv.txt_search_holdings.setText("")
 
-    # 4. Test double click on holding row opens TransactionHistoryDialog with initial_search
-    recorded_symbol = []
-    original_open_audit = hv._open_transaction_audit
+    # 4. Test double click on holding row opens TransactionHistoryDialog with initial_search and show_adjustments=True
+    audit_calls = []
 
-    def mock_open_audit(symbol=None):
-        recorded_symbol.append(symbol)
+    class MockAuditDlg:
+        def __init__(self, *args, **kwargs):
+            audit_calls.append(kwargs)
+            self.transaction_deleted = type("DummySignal", (), {"connect": lambda self, fn: None})()
+            self.transaction_updated = type("DummySignal", (), {"connect": lambda self, fn: None})()
 
-    monkeypatch.setattr(hv, "_open_transaction_audit", mock_open_audit)
+        def exec(self):
+            pass
+
+    monkeypatch.setattr("portfolio_tracker.ui.holdings_view.TransactionHistoryDialog", MockAuditDlg)
 
     # Find row index for AARTIDRUGS
     aarti_row = None
@@ -757,19 +769,32 @@ def test_holdings_table_search_and_double_click_navigation(qapp, db_conn, monkey
             break
     assert aarti_row is not None
 
-    # Simulate double-click on AARTIDRUGS row
+    # Simulate double-click on AARTIDRUGS row -> show_adjustments should be True
     hv._on_table_cell_double_clicked(aarti_row, 0)
-    assert len(recorded_symbol) == 1
-    assert recorded_symbol[0] == "AARTIDRUGS"
+    assert len(audit_calls) == 1
+    assert audit_calls[-1]["initial_search"] == "AARTIDRUGS"
+    assert audit_calls[-1]["show_adjustments"] is True
 
-    # 5. Verify TransactionHistoryDialog with initial_search pre-populates and filters immediately
-    hist_dlg = TransactionHistoryDialog(db_conn, initial_search="AARTIDRUGS")
+    # Simulate clicking general "All Trades" header button -> show_adjustments should be False
+    hv.btn_audit.click()
+    assert len(audit_calls) == 2
+    assert audit_calls[-1]["initial_search"] == ""
+    assert audit_calls[-1]["show_adjustments"] is False
+
+    # 5. Verify TransactionHistoryDialog with initial_search and show_adjustments
+    hist_dlg = TransactionHistoryDialog(db_conn, initial_search="AARTIDRUGS", show_adjustments=True)
     assert "AARTIDRUGS" in hist_dlg.windowTitle()
     assert hist_dlg.txt_search.text() == "AARTIDRUGS"
+    assert hist_dlg.chk_show_adjustments.isChecked() is True
     hist_visible = [r for r in range(hist_dlg.table.rowCount()) if not hist_dlg.table.isRowHidden(r)]
     assert len(hist_visible) == 6  # 5 buys + 1 sell
-    assert "Showing 6 of 9 trade(s)" in hist_dlg.lbl_count.text()
+    assert "Showing 6 of 9" in hist_dlg.lbl_count.text()
     hist_dlg.close()
+
+    # Verify default TransactionHistoryDialog keeps adjustments unchecked
+    hist_dlg_default = TransactionHistoryDialog(db_conn)
+    assert hist_dlg_default.chk_show_adjustments.isChecked() is False
+    hist_dlg_default.close()
 
     # 6. Verify ManualTradeDialog with initial_symbol pre-populates symbol field
     man_dlg = ManualTradeDialog(db_conn, initial_symbol="AARTIDRUGS")
@@ -894,6 +919,195 @@ def test_upload_view_multiple_files_and_account_warning(qapp, db_conn, tmp_path,
     assert len(signals) == 1
 
     uv.close()
+
+
+def test_all_trades_symbol_mapping_dual_search_and_adjustments_toggle(qapp, db_conn):
+    """Verify TransactionHistoryDialog supports dual canonical/historical search and toggling adjustments."""
+    # Map PEL -> PIRAMALFIN
+    add_symbol_mapping(db_conn, "PEL", "PIRAMALFIN", "Piramal Enterprises Renamed")
+
+    # Seed 1 trade for PEL and 1 trade for PIRAMALFIN
+    insert_manual_transaction(db_conn, "ZERODHA_SELF", "PEL", "BUY", 10, 1000.0, "2023-01-01 10:00:00")
+    insert_manual_transaction(db_conn, "ZERODHA_SELF", "PIRAMALFIN", "BUY", 10, 1200.0, "2024-01-01 10:00:00")
+
+    # Seed 1 stock adjustment and 1 carried profit adjustment on TCS
+    insert_pnl_adjustment(
+        db_conn,
+        account_id="ZERODHA_SELF",
+        amount=15.93,
+        adjustment_date="2024-01-02",
+        category="BROKERAGE_CHARGES",
+        direction="LOSS",
+        symbol="PIRAMALFIN",
+        notes="DP Charge on PIRAMALFIN",
+    )
+    insert_pnl_adjustment(
+        db_conn,
+        account_id="ZERODHA_SELF",
+        amount=5000.0,
+        adjustment_date="2022-12-31",
+        category="CARRIED_FORWARD_PROFIT",
+        direction="PROFIT",
+        symbol="TCS",
+        notes="Old Demat Lumpsum",
+    )
+
+    dlg = TransactionHistoryDialog(db_conn)
+
+    # 1. Initially toggle is unchecked -> Only 2 trades shown
+    assert dlg.chk_show_adjustments.isChecked() is False
+    assert dlg.table.rowCount() == 2
+
+    # Verify symbol mapping presentation on PEL: "PEL ➔ PIRAMALFIN"
+    symbols = [dlg.table.item(r, 2).text() for r in range(dlg.table.rowCount())]
+    assert "PEL ➔ PIRAMALFIN" in symbols
+    assert "PIRAMALFIN" in symbols
+
+    # 2. Dual Search Verification:
+    # Query 'PIRAMALFIN' should match BOTH the mapped PEL trade and the native PIRAMALFIN trade
+    dlg.txt_search.setText("PIRAMALFIN")
+    visible_rows = [r for r in range(dlg.table.rowCount()) if not dlg.table.isRowHidden(r)]
+    assert len(visible_rows) == 2
+
+    # Query 'PEL' should ONLY match the historic PEL trade
+    dlg.txt_search.setText("PEL")
+    visible_rows = [r for r in range(dlg.table.rowCount()) if not dlg.table.isRowHidden(r)]
+    assert len(visible_rows) == 1
+    matched_sym = dlg.table.item(visible_rows[0], 2).text()
+    assert matched_sym == "PEL ➔ PIRAMALFIN"
+
+    # Reset search
+    dlg.txt_search.clear()
+
+    # 3. Check adjustments toggle -> 4 rows (2 trades + 2 adjustments)
+    dlg.chk_show_adjustments.setChecked(True)
+    assert dlg.table.rowCount() == 4
+
+    types = [dlg.table.item(r, 3).text() for r in range(dlg.table.rowCount())]
+    assert "BUY" in types
+    assert "+ PROFIT" in types
+    assert "- LOSS / CHG" in types
+
+    # Search with adjustments active:
+    # Query 'PIRAMALFIN' should show the 2 trades AND the DP charge adjustment on PIRAMALFIN
+    dlg.txt_search.setText("PIRAMALFIN")
+    visible_rows = [r for r in range(dlg.table.rowCount()) if not dlg.table.isRowHidden(r)]
+    assert len(visible_rows) == 3
+
+    # Query 'Old Demat' should show the account-wide adjustment
+    dlg.txt_search.setText("Old Demat")
+    visible_rows = [r for r in range(dlg.table.rowCount()) if not dlg.table.isRowHidden(r)]
+    assert len(visible_rows) == 1
+    assert "Old Demat" in dlg.table.item(visible_rows[0], 7).text()
+
+    dlg.close()
+
+
+def test_pnl_adjustments_dialog(qapp, db_conn, monkeypatch):
+    """Verify PnlAdjustmentsDialog form validation, presets, ledger audit, and CRUD operations."""
+    from PySide6.QtWidgets import QMessageBox
+
+    info_messages = []
+    monkeypatch.setattr(QMessageBox, "information", lambda *args, **kwargs: info_messages.append(args))
+    monkeypatch.setattr(QMessageBox, "warning", lambda *args, **kwargs: QMessageBox.Ok)
+    monkeypatch.setattr(QMessageBox, "critical", lambda *args, **kwargs: QMessageBox.Ok)
+    monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: QMessageBox.Yes)
+
+    dlg = PnlAdjustmentsDialog(db_conn, default_account_id="ZERODHA_SELF")
+
+    # Initially ledger is empty
+    assert dlg.table_ledger.rowCount() == 0
+
+    # 1. Test Preset button
+    dlg.btn_preset_brokerage.click()
+    assert dlg.combo_category.currentData() == "BROKERAGE_CHARGES"
+    assert dlg.radio_loss.isChecked() is True
+
+    # 2. Fill form and save
+    dlg.txt_amount.setText("1,250.50")
+    dlg.txt_symbol.setText("INFY")
+    dlg.txt_notes.setText("Brokerage and STT charges")
+    dlg.btn_save.click()
+
+    # Verify saved in DB
+    adjs = get_pnl_adjustments(db_conn)
+    assert len(adjs) == 1
+    assert adjs[0]["amount"] == 1250.50
+    assert adjs[0]["category"] == "BROKERAGE_CHARGES"
+    assert adjs[0]["symbol"] == "INFY"
+    assert adjs[0]["direction"] == "LOSS"
+
+    # Verify ledger table has 1 row and tab switched to Ledger
+    assert dlg.tabs.currentIndex() == 1
+    assert dlg.table_ledger.rowCount() == 1
+
+    # 3. Test Edit from Ledger
+    dlg.table_ledger.selectRow(0)
+    dlg.btn_edit_ledger.click()
+    assert dlg.tabs.currentIndex() == 0
+    assert dlg.editing_adjustment_id is not None
+    assert dlg.btn_save.text() == "💾 Update Adjustment"
+    assert dlg.txt_amount.text() == "1250.5"
+
+    # Update amount to 1500.00
+    dlg.txt_amount.setText("1500.00")
+    dlg.btn_save.click()
+
+    adjs = get_pnl_adjustments(db_conn)
+    assert len(adjs) == 1
+    assert adjs[0]["amount"] == 1500.00
+
+    # 4. Test Delete from Ledger
+    dlg.tabs.setCurrentIndex(1)
+    dlg.table_ledger.selectRow(0)
+    dlg.btn_delete_ledger.click()
+
+    adjs = get_pnl_adjustments(db_conn)
+    assert len(adjs) == 0
+    assert dlg.table_ledger.rowCount() == 0
+
+    dlg.close()
+
+
+def test_holdings_view_adjustments_button_and_kpis(qapp, db_conn):
+    """Verify HoldingsView displays P&L Adjustments button, adjusts Card 2 KPI, and provides tooltip breakdowns."""
+    # Seed trade
+    insert_manual_transaction(db_conn, "ZERODHA_SELF", "TCS", "BUY", 100, 3000.0, "2026-01-01")
+
+    # Seed stock-specific carried forward profit of 50,000 on TCS
+    insert_pnl_adjustment(
+        db_conn,
+        account_id="ZERODHA_SELF",
+        amount=50000.0,
+        adjustment_date="2025-12-31",
+        category="CARRIED_FORWARD_PROFIT",
+        direction="PROFIT",
+        symbol="TCS",
+        notes="Old Demat",
+    )
+
+    win = MainWindow(db_conn)
+    hv = win.holdings_view
+
+    # Verify Adjustments button exists
+    assert hasattr(hv, "btn_pnl_adjustments")
+    assert "Adjust" in hv.btn_pnl_adjustments.text()
+
+    hv.refresh_data()
+
+    # Card 2 (Realized P&L) should reflect Trade P&L + Net Adjustments
+    assert "50,000.00" in hv.card_extracted.value_label.text()
+    assert "Adj: +₹50,000.00" in hv.card_extracted.sub_label.text()
+
+    # TCS Row in Holdings Table
+    assert hv.table.rowCount() == 1
+    pnl_item = hv.table.item(0, 5)  # Col 5: Booked P&L
+    assert "(+) ₹50,000.00" in pnl_item.text()
+    assert "Carried Profit (Old Accounts): +₹50,000.00" in pnl_item.toolTip()
+    assert "Stock Charges / Brokerage: -₹0.00" in pnl_item.toolTip()
+
+    win.close()
+
 
 
 

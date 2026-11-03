@@ -8,6 +8,16 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 from PySide6.QtWidgets import QApplication
+from portfolio_tracker.db import init_db
+
+
+@pytest.fixture
+def db_conn(tmp_path):
+    """Function-scoped fresh SQLite database connection fixture."""
+    test_db = tmp_path / "test_session.db"
+    conn = init_db(test_db)
+    yield conn
+    conn.close()
 
 
 @pytest.fixture(scope="session")

@@ -40,6 +40,7 @@ from portfolio_tracker.exporter import export_portfolio_to_excel
 from portfolio_tracker.ui.account_manager_dialog import AccountManagerDialog
 from portfolio_tracker.ui.charts import NativeChartView
 from portfolio_tracker.ui.manual_trade_dialog import ManualTradeDialog
+from portfolio_tracker.ui.pnl_adjustments_dialog import PnlAdjustmentsDialog
 from portfolio_tracker.ui.storage_settings_dialog import StorageSettingsDialog
 from portfolio_tracker.ui.styles import (
     NumericTableWidgetItem,
@@ -101,7 +102,7 @@ class HoldingsView(QWidget):
 
         # Row 1: Primary View Filters and Primary Actions
         row1_layout = QHBoxLayout()
-        row1_layout.setSpacing(12)
+        row1_layout.setSpacing(8)
 
         # Account Selector
         lbl_acc = QLabel("Portfolio:")
@@ -110,7 +111,7 @@ class HoldingsView(QWidget):
 
         self.combo_account = QComboBox()
         self.combo_account.setView(QListView())
-        self.combo_account.setMinimumWidth(260)
+        self.combo_account.setMinimumWidth(210)
         self.combo_account.currentIndexChanged.connect(self.refresh_data)
         row1_layout.addWidget(self.combo_account)
 
@@ -126,7 +127,7 @@ class HoldingsView(QWidget):
         self.btn_symbol_mapping.clicked.connect(self._open_symbol_mapping)
         row1_layout.addWidget(self.btn_symbol_mapping)
 
-        row1_layout.addSpacing(6)
+        row1_layout.addSpacing(4)
 
         # Cutoff Date Picker
         lbl_date = QLabel("As of Date:")
@@ -138,12 +139,12 @@ class HoldingsView(QWidget):
         self.date_cutoff.setCalendarPopup(True)
         configure_modern_calendar(self.date_cutoff.calendarWidget())
         self.date_cutoff.setDisplayFormat("yyyy-MM-dd")
-        self.date_cutoff.setMinimumWidth(130)
+        self.date_cutoff.setMinimumWidth(120)
         self.date_cutoff.setToolTip("Filter portfolio holdings and transactions up to this date")
         self.date_cutoff.dateChanged.connect(self.refresh_data)
         row1_layout.addWidget(self.date_cutoff)
 
-        row1_layout.addSpacing(6)
+        row1_layout.addSpacing(4)
 
         # Closed Positions Toggle
         self.chk_closed = QCheckBox("Show Closed Positions")
@@ -161,11 +162,11 @@ class HoldingsView(QWidget):
         self.btn_manual_trade.clicked.connect(lambda: self._open_manual_trade())
         row1_layout.addWidget(self.btn_manual_trade)
 
-        self.btn_export = QPushButton("Export Excel")
-        set_style_class(self.btn_export, "success-btn")
-        self.btn_export.setToolTip("Export multi-tab formatted Excel report (Consolidated + Accounts)")
-        self.btn_export.clicked.connect(self._export_to_excel)
-        row1_layout.addWidget(self.btn_export)
+        self.btn_pnl_adjustments = QPushButton("⚖️ Adjust P&L")
+        self.btn_pnl_adjustments.setStyleSheet("padding: 7px 11px;")
+        self.btn_pnl_adjustments.setToolTip("Record stock-specific carried-forward profit/loss or brokerage charges")
+        self.btn_pnl_adjustments.clicked.connect(lambda: self._open_pnl_adjustments())
+        row1_layout.addWidget(self.btn_pnl_adjustments)
 
         controls_layout.addLayout(row1_layout)
 
@@ -183,6 +184,12 @@ class HoldingsView(QWidget):
         self.btn_audit.setToolTip("Inspect all transaction records, filter by symbol, or delete entries")
         self.btn_audit.clicked.connect(lambda: self._open_transaction_audit())
         row2_layout.addWidget(self.btn_audit)
+
+        self.btn_export = QPushButton("Export Excel")
+        set_style_class(self.btn_export, "success-btn")
+        self.btn_export.setToolTip("Export multi-tab formatted Excel report (Consolidated + Accounts)")
+        self.btn_export.clicked.connect(self._export_to_excel)
+        row2_layout.addWidget(self.btn_export)
 
         controls_layout.addLayout(row2_layout)
 
@@ -412,7 +419,12 @@ class HoldingsView(QWidget):
         self.current_holdings_df = df
 
         # Update KPI Cards
-        summary = get_portfolio_summary(df)
+        summary = get_portfolio_summary(
+            df,
+            db_conn=self.db_conn,
+            account_id=account_id,
+            cutoff_date=cutoff_str,
+        )
 
         # Card 1: Total Net Exposure
         net_exposure_val = summary.get("total_net_exposure", summary.get("total_net_capital_at_risk", 0.0))
@@ -423,17 +435,28 @@ class HoldingsView(QWidget):
             self.card_risk.value_label.setText("₹0.00 (Risk Free)")
             self.card_risk.value_label.setStyleSheet("color: #047857;")
 
-        # Card 2: Total Booked Profit
-        booked_profit_val = summary.get("total_booked_profit", summary.get("total_cash_extracted", 0.0))
-        if booked_profit_val > 0:
-            self.card_extracted.value_label.setText(f"(+) ₹{booked_profit_val:,.2f}")
+        # Card 2: Total Booked Profit (Comprehensive Net Realized P&L including Adjustments & Brokerage)
+        net_realized_val = summary.get("total_net_realized_pnl", summary.get("total_booked_profit", 0.0))
+        if net_realized_val > 0:
+            self.card_extracted.value_label.setText(f"(+) ₹{net_realized_val:,.2f}")
             self.card_extracted.value_label.setStyleSheet("color: #047857;")
-        elif booked_profit_val < 0:
-            self.card_extracted.value_label.setText(f"(-) ₹{abs(booked_profit_val):,.2f}")
+        elif net_realized_val < 0:
+            self.card_extracted.value_label.setText(f"(-) ₹{abs(net_realized_val):,.2f}")
             self.card_extracted.value_label.setStyleSheet("color: #DC2626;")
         else:
             self.card_extracted.value_label.setText("₹0.00")
             self.card_extracted.value_label.setStyleSheet("color: #0F172A;")
+
+        adj_count = summary.get("adjustments_count", 0)
+        if adj_count > 0:
+            trade_pnl = summary.get("total_trade_booked_pnl", 0.0)
+            net_adj = summary.get("total_net_adjustments", 0.0)
+            sign_adj = "+" if net_adj >= 0 else "-"
+            self.card_extracted.sub_label.setText(
+                f"Trades: ₹{trade_pnl:,.2f} • Adj: {sign_adj}₹{abs(net_adj):,.2f}"
+            )
+        else:
+            self.card_extracted.sub_label.setText("Realized profits from sales across portfolio")
 
         # Card 3: Active Holdings
         self.card_stocks.value_label.setText(f"{summary['active_stocks_count']} Stocks")
@@ -519,8 +542,13 @@ class HoldingsView(QWidget):
             )
             self.table.setItem(r_idx, 4, actual_item)
 
-            # 5. Booked P&L (Realized profit/loss from sales so far)
+            # 5. Booked P&L (Realized profit/loss from sales so far + stock-specific adjustments)
             pnl_val = float(row.get("booked_pnl", row.get("realized_pnl", 0.0)))
+            trade_pnl_val = float(row.get("trade_booked_pnl", pnl_val))
+            stock_adj_val = float(row.get("stock_adj_pnl", 0.0))
+            carried_profit_val = float(row.get("stock_carried_profit", 0.0))
+            charges_val = float(row.get("stock_charges", 0.0))
+
             pnl_item = NumericTableWidgetItem()
             pnl_item.setData(Qt.UserRole, pnl_val)
             pnl_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
@@ -528,17 +556,31 @@ class HoldingsView(QWidget):
                 pnl_item.setText(f"(+) ₹{pnl_val:,.2f}")
                 pnl_item.setForeground(QColor("#047857"))  # Emerald Green
                 pnl_item.setBackground(QColor("#DCFCE7"))  # High-contrast green fill
-                pnl_item.setToolTip(f"Realized Profit Booked: ₹{pnl_val:,.2f}\nProfits extracted from sales so far.")
             elif pnl_val < 0:
                 pnl_item.setText(f"(-) ₹{abs(pnl_val):,.2f}")
                 pnl_item.setForeground(QColor("#DC2626"))  # Crimson Red
                 pnl_item.setBackground(QColor("#FEE2E2"))  # High-contrast red fill
-                pnl_item.setToolTip(f"Realized Loss Booked: ₹{abs(pnl_val):,.2f}\nLosses realized from sales so far.")
             else:
                 pnl_item.setText("₹0.00")
                 pnl_item.setForeground(QColor("#475569"))
                 pnl_item.setBackground(QColor("#F1F5F9"))
-                pnl_item.setToolTip("Break-Even: No profit or loss booked.")
+
+            # Build detailed tooltip breakdown
+            tip = f"Realized Booked P&L: ₹{pnl_val:,.2f}"
+            if stock_adj_val != 0:
+                tip += (
+                    f"\n• Trade Realized Gains: ₹{trade_pnl_val:,.2f}"
+                    f"\n• Carried Profit (Old Accounts): +₹{carried_profit_val:,.2f}"
+                    f"\n• Stock Charges / Brokerage: -₹{charges_val:,.2f}"
+                )
+            elif pnl_val > 0:
+                tip += "\nProfits extracted from sales so far."
+            elif pnl_val < 0:
+                tip += "\nLosses realized from sales so far."
+            else:
+                tip += "\nBreak-Even: No profit or loss booked."
+            pnl_item.setToolTip(tip)
+
             font_bold_pnl = pnl_item.font()
             font_bold_pnl.setBold(True)
             pnl_item.setFont(font_bold_pnl)
@@ -709,6 +751,9 @@ class HoldingsView(QWidget):
         act_manual = menu.addAction(f"➕ Add Manual Trade for {symbol}")
         act_manual.triggered.connect(lambda: self._open_manual_trade(symbol=symbol))
 
+        act_adj = menu.addAction(f"⚖️ Add Adjustment for {symbol}")
+        act_adj.triggered.connect(lambda: self._open_pnl_adjustments(symbol=symbol))
+
         menu.addSeparator()
         act_copy = menu.addAction(f"📋 Copy Symbol ({symbol})")
         act_copy.triggered.connect(lambda: QApplication.clipboard().setText(symbol))
@@ -743,11 +788,25 @@ class HoldingsView(QWidget):
         dlg.trade_added.connect(self._on_trade_modified)
         dlg.exec()
 
-    def _open_transaction_audit(self, symbol: Optional[str] = None):
+    def _open_pnl_adjustments(self, symbol: Optional[str] = None):
         if not isinstance(symbol, str):
             symbol = ""
         acc_id = self.combo_account.currentData()
-        dlg = TransactionHistoryDialog(self.db_conn, account_id=acc_id, initial_search=symbol, parent=self)
+        dlg = PnlAdjustmentsDialog(self.db_conn, default_account_id=acc_id, initial_symbol=symbol, parent=self)
+        dlg.adjustments_changed.connect(self._on_trade_modified)
+        dlg.exec()
+
+    def _open_transaction_audit(self, symbol: Optional[str] = None):
+        has_symbol = bool(isinstance(symbol, str) and symbol.strip())
+        clean_symbol = symbol.strip() if has_symbol else ""
+        acc_id = self.combo_account.currentData()
+        dlg = TransactionHistoryDialog(
+            self.db_conn,
+            account_id=acc_id,
+            initial_search=clean_symbol,
+            show_adjustments=has_symbol,
+            parent=self,
+        )
         dlg.transaction_deleted.connect(self._on_trade_modified)
         dlg.transaction_updated.connect(self._on_trade_modified)
         dlg.exec()
