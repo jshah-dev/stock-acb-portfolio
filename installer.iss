@@ -2,7 +2,7 @@
 ; Creates single-file Windows setup wizard: StockACBPortfolioTrackerSetup.exe
 
 #define MyAppName "Stock ACB Portfolio Tracker"
-#define MyAppVersion "1.2.0"
+#define MyAppVersion "1.3.0"
 #define MyAppPublisher "JShah"
 #define MyAppURL "https://github.com/jshah-dev/stock-acb-portfolio"
 #define MyAppSupportURL "https://github.com/jshah-dev"

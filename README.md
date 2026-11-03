@@ -13,8 +13,8 @@ Unlike standard broker portals that erase historical cost context or display mis
 
 ## Key Features
 
-### 1. 9-Column Transparent ACB Ledger
-Track positions with mathematical precision through 9 dedicated columns:
+### 1. 10-Column Transparent ACB Ledger & Dividend Risk Offset
+Track positions with mathematical precision through up to 10 dedicated columns:
 
 | Column | Header | Description |
 |---|---|---|
@@ -24,16 +24,18 @@ Track positions with mathematical precision through 9 dedicated columns:
 | **4** | **Total Proceeds (₹)** | Cumulative cash extracted from partial or full sell orders |
 | **5** | **Actual Exposure (₹)** | Current capital invested in remaining shares (`Shares Held × Avg Buy Price`) |
 | **6** | **Booked P&L (₹)** | Realized profit or loss extracted through sales (`Total Proceeds - Cost of Sold Shares`) |
-| **7** | **Net Exposure (₹)** | True capital at risk after accounting for booked profits (`Actual Exposure - Booked P&L`) |
-| **8** | **Effective Avg Price (₹)** | Net break-even price per share (`Net Exposure ÷ Shares Held`) |
-| **9** | **Status / Flag** | Visual status badge: **Active**, **Risk Free (House Money)**, or **Closed** |
+| **7** | **Dividends (₹)** | *(Dynamic)* Cumulative dividends received for the stock. Revealed when `Include Dividends` is checked |
+| **8** | **Net Exposure (₹)** | True capital at risk after accounting for booked profits (`Actual Exposure - Booked P&L - Dividends`) |
+| **9** | **Effective Avg Price (₹)** | Net break-even price per share (`Net Exposure ÷ Shares Held`) |
+| **10** | **Status / Flag** | Visual status badge: **Active**, **Risk Free (House Money)**, or **Closed** |
 
 > **Core Mathematical Identity:**  
-> ### **Actual Exposure − Booked P&L = Net Exposure**  
-> - **Pure House Money (Risk-Free):** When cumulative sell proceeds exceed the total purchase cost (`Net Exposure <= 0`), the remaining shares have zero downside capital risk. Effective Average Price displays as **Risk Free** with a badge.  
+> ### **Actual Exposure − (Booked P&L + Dividends) = Net Exposure**  
+> - **Opt-In Dividend Offset (`[✓] Include Dividends`):** By default, baseline calculations exclude dividends. Checking `"Include Dividends"` deducts dividends from capital at risk, reveals the `Total Dividends` card in the executive summary panel, and dynamically awards **Risk Free (House Money)** status if dividends bridge remaining exposure.
+> - **Pure House Money (Risk-Free):** When cumulative sell proceeds and dividends exceed purchase costs (`Net Exposure <= 0`), the remaining shares have zero downside capital risk. Effective Average Price displays as **Risk Free** with a badge.  
 > - **Exited / Closed Holdings:** When all shares of a stock have been sold (`Shares Held = 0`), the Effective Average Price cleanly displays **₹0.00** in neutral muted slate, preserving historical booked gains without distortion.
 > - **Instant Holdings Search & Autocomplete:** A search input right above the table filters stocks in real time by ticker or status (e.g., `Active`, `Risk Free`, `Closed`), paired with dynamic autocomplete and a live stock counter.
-> - **Double-Click Script Audit & Context Menu:** Double-clicking any stock row (or right-clicking) instantly opens the **All Trades** audit dialog pre-filtered to all historical trades for that stock, with direct options to inspect records or record manual adjustments.
+> - **Double-Click Script Audit & Context Menu:** Double-clicking any stock row (or right-clicking) instantly opens the **All Trades** audit dialog pre-filtered to all historical trades for that stock, with direct options to inspect records, record manual adjustments, or toggle dividend payouts.
 
 ---
 
